@@ -149,9 +149,12 @@ test("Load picks CSV and IMG files through their existing loaders", async () => 
   assert.equal(fileInput.value, "");
 });
 
-test("Export opens downward choices and runs the selected format", async () => {
+test("Export opens downward choices and runs the selected format", async (t) => {
   installUiDom();
   const { calls } = await bootUi();
+  // Each export schedules its object URL's revoke a minute out; fake timers
+  // keep those from holding the test process open.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const document = globalThis.document;
   const toggle = document.querySelector("#export-menu-toggle");
   const menu = document.querySelector("#export-menu");
