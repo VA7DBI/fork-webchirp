@@ -22,6 +22,10 @@ const LOADABLE_FILE_KINDS = new Map([
   [".img", "img"],
 ]);
 
+// How long an export's object URL outlives its click. Generous on purpose:
+// the browser may still be reading the blob, and holding it costs only memory.
+export const DOWNLOAD_URL_LIFETIME_MS = 60_000;
+
 export const DROPPABLE_FILE_DESCRIPTION = "a CHIRP CSV (.csv) or binary codeplug (.img) file";
 
 // Decide which loader a file belongs to, or null when it is neither kind we can
@@ -197,25 +201,20 @@ export function createCodeplugIo(ctx: UiContext) {
     trackCodeplugImport("csv", source, mode);
   }
 
-  // Trigger client-side download of generated text content as a file.
-  function downloadText(filename: string, text: string): void {
-    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+  // Save a generated file through a temporary object URL. The anchor is put in
+  // the document before it is clicked and the URL is revoked only later:
+  // Firefox and Safari start reading the blob after click() returns, so a
+  // detached anchor or a same-tick revoke gives a truncated or missing file.
+  function downloadBlob(filename: string, blob: Blob): void {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
+    a.hidden = true;
+    document.body.append(a);
     a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadBytes(filename: string, bytes: Uint8Array<ArrayBuffer>): void {
-    const blob = new Blob([bytes], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
   }
 
   // Ask Python runtime to normalize current rows and export as CSV file.
@@ -232,7 +231,7 @@ export function createCodeplugIo(ctx: UiContext) {
       state.selectedRadio?.model || "export",
       "csv",
     );
-    downloadText(fileName, csvText);
+    downloadBlob(fileName, new Blob([csvText], { type: "text/csv;charset=utf-8" }));
     trackEvent("codeplug_export", {
       ...radioEventParams(state.selectedRadio),
       ...codeplugParams(state),
@@ -260,7 +259,7 @@ export function createCodeplugIo(ctx: UiContext) {
       result.model || state.selectedRadio.model,
       "img",
     );
-    downloadBytes(fileName, bytes);
+    downloadBlob(fileName, new Blob([bytes], { type: "application/octet-stream" }));
     trackEvent("codeplug_export", {
       ...radioEventParams(state.selectedRadio),
       ...codeplugParams(state),
