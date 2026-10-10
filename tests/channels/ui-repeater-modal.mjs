@@ -268,8 +268,10 @@ function geolocateButton(dom) {
   return button;
 }
 
+// By label, not by the 🗑️ glyph: the Place name and Coordinates rows carry
+// erase buttons too, and this is the locator row's, which wipes the position.
 function clearLocationButton(dom) {
-  const button = descendants(grid(dom)).find((el) => el.textContent === "🗑️");
+  const button = descendants(grid(dom)).find((el) => el.getAttribute?.("aria-label") === "Clear location");
   assert.ok(button, "clear-location button is in the grid");
   return button;
 }
@@ -1725,6 +1727,26 @@ test("restoring a city costs no lookup", async () => {
   // The coordinates the name produced are already in the form; asking the
   // gazetteer to rediscover them would be a request whose answer is on screen.
   assert.equal(calls.filter((call) => call.url.includes("/cities")).length, afterPick);
+});
+
+test("erasing the place name keeps the position and stays erased on reopen", async () => {
+  const { dom } = buildHarness();
+  installFetch([{ match: "/meta", body: META_JSON }, { match: "/cities", body: KRAKOW_JSON }]);
+
+  await dispatch(dom.channelImportPrzemiennikiEl, "click");
+  await pickCity(dom, "krak");
+  const erase = descendants(grid(dom)).find((el) => el.getAttribute?.("aria-label") === "Clear place name");
+  assert.ok(erase, "the Place name row has its own erase button");
+  await dispatch(erase, "click");
+
+  assert.equal(fieldByName(dom, "city").value, "");
+  // Only the name goes: the coordinates it produced may since have been
+  // refined, and the Coordinates row has its own button.
+  assert.equal(fieldByName(dom, "latitude").value, "50.061430");
+  await dispatch(dom.repeaterQueryCancelEl, "click");
+  await dispatch(dom.channelImportPrzemiennikiEl, "click");
+  assert.equal(fieldByName(dom, "city").value, "", "the shell forgot it, so reopening does not restore it");
+  assert.equal(fieldByName(dom, "latitude").value, "50.061430");
 });
 
 test("moving the position by hand drops the city name it no longer describes", async () => {

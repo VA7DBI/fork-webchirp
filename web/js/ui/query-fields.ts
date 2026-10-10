@@ -267,6 +267,19 @@ const PREVIEW_DEBOUNCE_MS = 300;
 // tile traffic every render costs. Past it the drag rebases: the map redraws
 // around where it now is and the drag carries on from there.
 const PREVIEW_OVERSCAN = 128;
+// The 🗑️ button beside a modal field that wipes it. One builder, so the
+// Place name, Coordinates and Locator rows offer the same control with the same
+// look (.modal-geo-button in web/styles.css); `label` says what it erases.
+function createEraseButton(label: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = "modal-geo-button";
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.textContent = "🗑️";
+  return button;
+}
+
 // The worked examples in the coordinate placeholders. Manchester, to match the
 // place the Place name box uses as its own example, at the four decimal places
 // (about 10 m) the field is worth typing to by hand.
@@ -338,11 +351,18 @@ export function createPositionField(
   longitude.setAttribute("aria-label", "Longitude");
   longitude.title = "Longitude";
 
-  // One row, two equal boxes (see .modal-coord-row in web/styles.css).
+  // Erases the pair from the row that holds it, so wiping a mistyped position
+  // does not mean reaching down to the locator row's button. The locator is
+  // derived from the pair, so it empties with it (see clearPosition below).
+  const clearCoordsButton = createEraseButton("Clear coordinates");
+
+  // One row, two equal boxes and the erase button (see .modal-coord-row in
+  // web/styles.css).
   const coordRow = document.createElement("div");
   coordRow.className = "modal-coord-row";
   coordRow.appendChild(latitude);
   coordRow.appendChild(longitude);
+  coordRow.appendChild(clearCoordsButton);
 
   const locator = document.createElement("input");
   locator.id = fieldId(key, "locator");
@@ -361,12 +381,7 @@ export function createPositionField(
   geolocateButton.setAttribute("aria-label", "Use current location");
   geolocateButton.textContent = "🛰️";
 
-  const clearButton = document.createElement("button");
-  clearButton.className = "modal-geo-button";
-  clearButton.type = "button";
-  clearButton.title = "Clear location";
-  clearButton.setAttribute("aria-label", "Clear location");
-  clearButton.textContent = "🗑️";
+  const clearButton = createEraseButton("Clear location");
 
   // The locator shares its row with the two position actions: fill from the
   // browser's geolocation, and wipe all three fields.
@@ -759,13 +774,16 @@ export function createPositionField(
     notifyChange();
   });
   // Clearing is field-internal: it needs no source-specific behaviour, so the
-  // modal shell never sees this button.
-  clearButton.addEventListener("click", () => {
+  // modal shell never sees these buttons. Both wipe all three fields: a
+  // locator left behind after its coordinates went would describe nothing.
+  function clearPosition(): void {
     latitude.value = "";
     longitude.value = "";
     locator.value = "";
     notifyChange();
-  });
+  }
+  clearButton.addEventListener("click", clearPosition);
+  clearCoordsButton.addEventListener("click", clearPosition);
 
   // A rendered tile grid is a fixed pixel size, so it stops fitting the card
   // the moment the card changes width — a phone rotated with the modal open,
@@ -899,6 +917,8 @@ export interface CityFieldOptions {
   /** For the debug panel. */
   onError?: (error: unknown) => void;
   onSelect?: (city: City) => void;
+  /** The user erased the box with its 🗑️ button. */
+  onClear?: () => void;
 }
 
 // Text input that suggests place names. It stores no position itself: it
@@ -923,6 +943,7 @@ export function createCityField({
   search,
   onError,
   onSelect,
+  onClear,
 }: CityFieldOptions) {
   const input = document.createElement("input");
   input.id = fieldId(key);
@@ -961,6 +982,15 @@ export function createCityField({
   wrapper.appendChild(input);
   wrapper.appendChild(list);
   wrapper.appendChild(note);
+
+  // The box and its erase button side by side (see .modal-city-row in
+  // web/styles.css). The button sits outside the wrapper so the suggestion
+  // list keeps the input's width and does not run under the button.
+  const clearButton = createEraseButton("Clear place name");
+  const row = document.createElement("div");
+  row.className = "modal-city-row";
+  row.appendChild(wrapper);
+  row.appendChild(clearButton);
 
   // A mouse press anywhere in the list (scrollbar included) must not move focus
   // out of the input, because blur commits the highlighted entry. A touch press
@@ -1244,6 +1274,18 @@ export function createCityField({
     }
   });
 
+  // Erasing the name leaves the coordinates alone: they may have been typed or
+  // fine-tuned on the map after the place was picked, and the Coordinates row
+  // has its own button. The shell is told so the place is not restored on the
+  // next open.
+  clearButton.addEventListener("click", () => {
+    clear();
+    if (typeof onClear === "function") {
+      onClear();
+    }
+    input.focus?.();
+  });
+
   // Assigning the value fires no input event, so this triggers no lookup.
   if (selected) {
     input.value = cityLabel(selected);
@@ -1251,7 +1293,7 @@ export function createCityField({
 
   return {
     key,
-    nodes: [labelledBy(label, input.id), wrapper],
+    nodes: [labelledBy(label, input.id), row],
     focusTarget: input,
     // The committed place, or null. No source filters by city; this exists
     // for the shell's persistence and the tests, not for a query parameter.
@@ -1259,5 +1301,6 @@ export function createCityField({
     clear,
     input,
     list,
+    clearButton,
   };
 }
