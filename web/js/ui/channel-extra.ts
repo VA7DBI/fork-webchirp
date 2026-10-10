@@ -3,6 +3,7 @@ import { rowExtras, setRowExtras } from "../row-extra.ts";
 import { createSettingControl, readSettingControl } from "./setting-fields.ts";
 import type { ExtraField } from "./setting-fields.ts";
 import { requireRuntimeApi } from "./state.ts";
+import type { RadioSessionHandle } from "./state.ts";
 import type { RuntimeApi } from "../runtime-rpc.ts";
 import type { UiContext } from "../types/ui-context.js";
 import type { ChannelRow } from "./channel-values.ts";
@@ -29,6 +30,9 @@ export function createChannelExtra(ctx: UiContext) {
   // dropped on close, which is also what makes a late response harmless: it
   // finds a different row (or none) and returns.
   let editedRow: ChannelRow | null = null;
+  // The radio session the fields were read from. Their names and options are
+  // that driver's; save() refuses once it is no longer the selected radio's.
+  let editedSession: RadioSessionHandle | null = null;
   let fieldControls: ReturnType<typeof appendField>[] = [];
   // The grid button the open came from, refocused when the modal closes.
   let triggerElement: HTMLElement | null = null;
@@ -46,6 +50,7 @@ export function createChannelExtra(ctx: UiContext) {
     dom.channelExtraModalEl.classList.toggle("hidden", !open);
     if (!open) {
       editedRow = null;
+      editedSession = null;
       fieldControls = [];
       // Hand the keyboard back to where it came from; without this it is left
       // inside a hidden dialog and the next Tab starts from the top of the page.
@@ -154,6 +159,7 @@ export function createChannelExtra(ctx: UiContext) {
     const token = openToken + 1;
     openToken = token;
     editedRow = row;
+    editedSession = ctx.session.current();
     const location = String(row.Location ?? "").trim();
     dom.channelExtraTitleEl.textContent = location
       ? `Extra settings for channel ${location}`
@@ -229,6 +235,16 @@ export function createChannelExtra(ctx: UiContext) {
     if (!state.currentRows.includes(row)) {
       setModalOpen(false);
       log.setStatus("The channel list changed while the extra settings were open; nothing was saved.");
+      return;
+    }
+    // Choosing another radio keeps the rows but not the driver these fields
+    // came from: their names are the old driver's, and the upload path skips a
+    // stored name the new driver lacks (_apply_row_extras_to_memory in
+    // web/python/webchirp_bridge/channel_extra.py), so the value would be
+    // reported saved here and silently dropped there.
+    if (!ctx.session.isCurrent(editedSession)) {
+      setModalOpen(false);
+      log.setStatus("The selected radio changed while the extra settings were open; nothing was saved.");
       return;
     }
     const values: Record<string, unknown> = {};
