@@ -9,7 +9,7 @@
 // deliberate divergences from those ports, matching the kernel instead:
 // vendor writes use bmRequestType vendor|device (not class), and vendor reads
 // use bRequest 0x01 on non-HXN chips (0x81 is HXN-only).
-import { WebUsbTransport } from "./webusb-transport.ts";
+import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
 import type { WebUsbTransportOptions } from "./webusb-transport.ts";
 import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
@@ -454,10 +454,10 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     // transfers while the consumer is busy.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
+    // Every byte of each chunk, or an error: a stalled or short bulk OUT
+    // transfer resolves rather than rejects, so it is checked (writeBulkOut).
     this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
-      write: async (chunk) => {
-        await device.transferOut(outEndpoint, chunk);
-      },
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "PL2303"),
     });
   }
 

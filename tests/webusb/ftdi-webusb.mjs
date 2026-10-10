@@ -8,6 +8,11 @@ import {
   expectOnePacketPerTransfer,
   expectStallRecovery,
 } from "../support/usb-read-path.mjs";
+import {
+  expectShortWriteResumed,
+  expectStalledWriteFails,
+  expectStuckWriteFails,
+} from "../support/usb-write-path.mjs";
 
 // A fake FTDI USBDevice: a bulk pair (plus whatever endpoints the test adds),
 // recording every control write, with bulk IN packets framed the way this
@@ -171,5 +176,36 @@ test("FtdiSerialPort asks for exactly one packet per bulk IN transfer", async ()
     fake: makeFakeDevice(),
     endpointNumber: 1,
     packetSize: 64,
+  });
+});
+
+test("FtdiSerialPort write path reports a stalled bulk OUT instead of losing bytes", async () => {
+  // WebUSB resolves a failed bulk OUT with a status rather than rejecting, so a
+  // write path that ignores the result reports success on a protocol block that
+  // went nowhere: an upload truncated silently, surfacing later as a read
+  // timeout, with the endpoint left halted for every retry.
+  await expectStalledWriteFails({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    chip: "FTDI",
+    endpointNumber: 2,
+  });
+});
+
+test("FtdiSerialPort write path resumes a short bulk OUT transfer", async () => {
+  // bytesWritten can be less than the chunk; assuming a partial write was a
+  // whole one drops the tail of a frame silently.
+  await expectShortWriteResumed({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    endpointNumber: 2,
+  });
+});
+
+test("FtdiSerialPort write path gives up on a transfer that never progresses", async () => {
+  await expectStuckWriteFails({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    chip: "FTDI",
   });
 });

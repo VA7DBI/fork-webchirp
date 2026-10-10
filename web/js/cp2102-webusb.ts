@@ -15,7 +15,7 @@
 // and the bulk IN endpoint carries raw UART payload with no status header,
 // provided event-insertion mode is off. This driver never turns event mode on
 // and clears any it inherited at open, so 0xEC is an ordinary data byte.
-import { WebUsbTransport } from "./webusb-transport.ts";
+import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
 import type { WebUsbTransportOptions } from "./webusb-transport.ts";
 import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
@@ -677,55 +677,9 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     // transfers while the consumer is busy.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
-    this.writable = new WritableStream({
-      // A bulk OUT transfer that fails does *not* reject: WebUSB resolves it
-      // with a USBOutTransferResult carrying `status` and `bytesWritten`.
-      // Ignoring both makes writer.write() report success while a protocol
-      // block went nowhere — an upload that silently loses a frame instead of
-      // failing. So every transfer's status is checked, and a short write is
-      // resumed from where it stopped rather than assumed complete.
-      write: async (chunk: Uint8Array<ArrayBuffer>) => {
-        // The contract hands a Uint8Array; a caller outside it may hand any
-        // view or a bare buffer. A view keeps its own window onto its buffer.
-        const bytes = ArrayBuffer.isView(chunk)
-          ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-          : new Uint8Array(chunk);
-        let offset = 0;
-        while (offset < bytes.length) {
-          const remaining = bytes.subarray(offset);
-          const result = await device.transferOut(outEndpoint, remaining);
-          const status = result?.status || "ok";
-          if (status === "stall") {
-            // Leave the endpoint usable for whatever the caller does next; the
-            // write itself still fails, because the bytes are gone.
-            try {
-              await device.clearHalt("out", outEndpoint);
-            } catch {
-              // The halt may already be cleared, or the device gone.
-            }
-            throw new Error(
-              `CP2102: bulk OUT endpoint stalled after ${offset} of ${bytes.length} bytes`,
-            );
-          }
-          if (status !== "ok") {
-            throw new Error(
-              `CP2102: bulk OUT transfer failed (${status}) after ${offset} of ${bytes.length} bytes`,
-            );
-          }
-          // An implementation that reports no count is taken at its word that
-          // an "ok" transfer wrote everything it was given; Chrome always
-          // reports one.
-          const written = result?.bytesWritten === undefined
-            ? remaining.length
-            : Number(result.bytesWritten);
-          if (!(written > 0)) {
-            throw new Error(
-              `CP2102: bulk OUT wrote no bytes at offset ${offset} of ${bytes.length}`,
-            );
-          }
-          offset += written;
-        }
-      },
+    // Every byte of each chunk, or an error: see writeBulkOut.
+    this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "CP2102"),
     });
   }
 

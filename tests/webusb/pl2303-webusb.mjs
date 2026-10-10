@@ -25,6 +25,11 @@ import {
   expectOnePacketPerTransfer,
   expectStallRecovery,
 } from "../support/usb-read-path.mjs";
+import {
+  expectShortWriteResumed,
+  expectStalledWriteFails,
+  expectStuckWriteFails,
+} from "../support/usb-write-path.mjs";
 
 // Fake USBDevice for a PL2303: interrupt IN + bulk OUT + bulk IN endpoints,
 // records all control transfers, answers GET_DESCRIPTOR and the HX probe.
@@ -267,5 +272,36 @@ test("Pl2303SerialPort asks for exactly one packet per bulk IN transfer", async 
     fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
     endpointNumber: 3,
     packetSize: 64,
+  });
+});
+
+test("Pl2303SerialPort write path reports a stalled bulk OUT instead of losing bytes", async () => {
+  // WebUSB resolves a failed bulk OUT with a status rather than rejecting, so a
+  // write path that ignores the result reports success on a protocol block that
+  // went nowhere: an upload truncated silently, surfacing later as a read
+  // timeout, with the endpoint left halted for every retry.
+  await expectStalledWriteFails({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    chip: "PL2303",
+    endpointNumber: 2,
+  });
+});
+
+test("Pl2303SerialPort write path resumes a short bulk OUT transfer", async () => {
+  // bytesWritten can be less than the chunk; assuming a partial write was a
+  // whole one drops the tail of a frame silently.
+  await expectShortWriteResumed({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    endpointNumber: 2,
+  });
+});
+
+test("Pl2303SerialPort write path gives up on a transfer that never progresses", async () => {
+  await expectStuckWriteFails({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    chip: "PL2303",
   });
 });

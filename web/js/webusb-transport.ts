@@ -34,6 +34,66 @@ export const WEBUSB_CHIP_CAPABILITIES: Readonly<SerialTransportCapabilities> = O
   reconfigure: "reopen",
 });
 
+// Write one chunk to a chip's bulk OUT endpoint: every byte of it, or an
+// error. Shared by the four chip drivers' writable streams, because a bulk OUT
+// transfer that fails does *not* reject: WebUSB resolves it with a
+// USBOutTransferResult carrying `status` and `bytesWritten`. Ignoring both
+// makes writer.write() report success while a protocol block went nowhere --
+// an upload that silently loses a frame, surfacing later as an unrelated read
+// timeout. So every transfer's status is checked, a stalled endpoint is
+// cleared (so the caller's next write is not refused too) before the write
+// fails, and a short write is resumed from where it stopped rather than
+// assumed complete.
+/**
+ * @param chip The prefix the errors carry ("CH340").
+ */
+export async function writeBulkOut(
+  device: USBDevice,
+  endpointNumber: number,
+  chunk: BufferSource,
+  chip: string,
+): Promise<void> {
+  // The contract hands a Uint8Array; a caller outside it may hand any view or
+  // a bare buffer. A view keeps its own window onto its buffer.
+  const bytes = ArrayBuffer.isView(chunk)
+    ? new Uint8Array(chunk.buffer as ArrayBuffer, chunk.byteOffset, chunk.byteLength)
+    : new Uint8Array(chunk);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const remaining = bytes.subarray(offset);
+    const result = await device.transferOut(endpointNumber, remaining);
+    const status = result?.status || "ok";
+    if (status === "stall") {
+      // Leave the endpoint usable for whatever the caller does next; the
+      // write itself still fails, because the bytes are gone.
+      try {
+        await device.clearHalt("out", endpointNumber);
+      } catch {
+        // The halt may already be cleared, or the device gone.
+      }
+      throw new Error(
+        `${chip}: bulk OUT endpoint stalled after ${offset} of ${bytes.length} bytes`,
+      );
+    }
+    if (status !== "ok") {
+      throw new Error(
+        `${chip}: bulk OUT transfer failed (${status}) after ${offset} of ${bytes.length} bytes`,
+      );
+    }
+    // An implementation that reports no count is taken at its word that an
+    // "ok" transfer wrote everything it was given; Chrome always reports one.
+    const written = result?.bytesWritten === undefined
+      ? remaining.length
+      : Number(result.bytesWritten);
+    if (!(written > 0)) {
+      throw new Error(
+        `${chip}: bulk OUT wrote no bytes at offset ${offset} of ${bytes.length}`,
+      );
+    }
+    offset += written;
+  }
+}
+
 export class WebUsbTransport {
   device: USBDevice;
   _usbEvents: EventTarget | null | undefined;

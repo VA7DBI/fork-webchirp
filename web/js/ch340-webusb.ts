@@ -8,7 +8,7 @@
 // speaks vendor control requests on the default endpoint; the bulk IN endpoint
 // carries raw UART payload with no status header (modem status arrives on a
 // separate interrupt endpoint, which this driver does not read).
-import { WebUsbTransport } from "./webusb-transport.ts";
+import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
 import type { WebUsbTransportOptions } from "./webusb-transport.ts";
 import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
@@ -425,10 +425,10 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
     // suite dropping a packet mid-run on a 16 KB transfer.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
+    // Every byte of each chunk, or an error: a stalled or short bulk OUT
+    // transfer resolves rather than rejects, so it is checked (writeBulkOut).
     this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
-      write: async (chunk) => {
-        await device.transferOut(outEndpoint, chunk);
-      },
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "CH340"),
     });
   }
 
