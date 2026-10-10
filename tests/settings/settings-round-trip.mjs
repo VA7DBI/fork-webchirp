@@ -319,3 +319,63 @@ test("a setting CHIRP could not load does not abort the write for every other on
     assert.equal(result.after, result.before, `${field} was rewritten while being skipped`);
   }
 });
+
+// A RadioSetting holding several values carries mutability on each value, not
+// on the setting: one locked value must not lock its siblings (issue 98).
+test("a multi-value setting reports mutability per value only", async () => {
+  const { harness } = await context();
+  const node = await harness.runPythonJson(
+    `
+_open = chirp_settings.RadioSettingValueString(0, 8, "Open")
+_locked = chirp_settings.RadioSettingValueString(0, 8, "Locked")
+_locked.set_mutable(False)
+_setting = chirp_settings.RadioSetting("pair", "Pair", _open, _locked)
+json.dumps(_serialize_setting_node(_setting, []))
+    `,
+  );
+  assert.equal("mutable" in node, false, "the setting itself carries no aggregate flag");
+  assert.deepEqual(node.values.map((value) => value.mutable), [true, false]);
+});
+
+// The write side of the same rule: an edit to the mutable sibling of a locked
+// value reaches the driver, while a setting whose every value is locked is
+// still withheld (issue 98, Codex review on PR 239).
+test("an edit beside a locked value is written, an all-locked setting is not", async () => {
+  const { harness } = await context();
+  const written = await harness.runPythonJson(
+    `
+def _mixed_tree():
+    _open = chirp_settings.RadioSettingValueString(0, 8, "Open")
+    _locked = chirp_settings.RadioSettingValueString(0, 8, "Locked")
+    _locked.set_mutable(False)
+    _frozen = chirp_settings.RadioSettingValueString(0, 8, "Frozen")
+    _frozen.set_mutable(False)
+    return chirp_settings.RadioSettings(chirp_settings.RadioSettingGroup(
+        "basic", "Basic",
+        chirp_settings.RadioSetting("pair", "Pair", _open, _locked),
+        chirp_settings.RadioSetting("frozen", "Frozen", _frozen),
+    ))
+
+class _MixedRadio:
+    written = None
+    def get_features(self):
+        _rf = chirp_common.RadioFeatures()
+        _rf.has_settings = True
+        return _rf
+    def get_settings(self):
+        return _mixed_tree()
+    def set_settings(self, settings):
+        _MixedRadio.written = {
+            s.get_name(): [str(v.get_value()).rstrip() for v in s]
+            for g in settings for s in g.values()
+        }
+
+_payload = _serialize_radio_settings(_mixed_tree())
+_payload[0]["children"][0]["values"][0]["current"] = "Edited"
+_res = _validate_and_apply_radio_settings(_MixedRadio(), _payload, apply_changes=True)
+json.dumps({"valid": _res["valid"], "written": _MixedRadio.written})
+    `,
+  );
+  assert.equal(written.valid, true);
+  assert.deepEqual(written.written, { pair: ["Edited", "Locked"] });
+});

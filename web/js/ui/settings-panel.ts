@@ -159,7 +159,9 @@ export function createSettingsPanel(ctx: UiContext) {
     const wrapper = document.createElement("div");
     wrapper.className = "settings-field-control";
     const key = settingKey(settingNode.path, valueIndex);
-    const immutable = settingNode.mutable === false || valueMeta.mutable === false;
+    // Mutability is per value: a multi-value setting can mix locked and
+    // editable values, and the write path skips only the locked ones.
+    const immutable = valueMeta.mutable === false;
     const errorText = invalidMessages.get(key) || "";
     wrapper.classList.toggle("is-invalid", Boolean(errorText));
     wrapper.classList.toggle("is-immutable", immutable);
