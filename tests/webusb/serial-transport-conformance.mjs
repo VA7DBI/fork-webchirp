@@ -401,7 +401,7 @@ test("each transport declares the capabilities its adapter has", async () => {
   assert.deepEqual(declared, {
     ftdi: framingChip,
     pl2303: framingChip,
-    ch340: chip,
+    ch340: framingChip,
     cp2102: chip,
     "cdc-polyfill": { transport: "webusb", framing: true, signals: true, reconfigure: "reopen" },
     "webserial-native": { transport: "webserial", framing: true, signals: true, reconfigure: "reopen" },

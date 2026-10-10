@@ -4,6 +4,7 @@ import {
   CH340_DEVICE_IDS,
   Ch340SerialPort,
   ch340GetDivisor,
+  ch340LineControl,
   isCh340Device,
 } from "../../web/js/ch340-webusb.ts";
 import { createWebUsbSerial } from "../../web/js/webusb-serial.ts";
@@ -175,6 +176,76 @@ test("Ch340SerialPort.open() skips the LCR write and bit 7 on pre-0x30 chips", a
     { request: 0x9a, value: 0x1312, index: 0xcc03 },
     { request: 0xa4, value: 0xffff, index: 0x0000 },
   ]);
+});
+
+test("ch340LineControl builds the LCR as the kernel's ch341_set_termios does", () => {
+  // RX+TX enable (0xc0), CS7 0x02 / CS8 0x03, parity enable 0x08 plus 0x10 for
+  // even, 0x04 for two stop bits.
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "none", stopBits: 1 }), 0xc3);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "even", stopBits: 1 }), 0xdb);
+  assert.equal(ch340LineControl({ dataBits: 7, parity: "even", stopBits: 1 }), 0xda);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "none", stopBits: 2 }), 0xc7);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "odd", stopBits: 1 }), 0xcb);
+});
+
+for (const [label, options, lcr] of [
+  ["8E1", { dataBits: 8, parity: "even", stopBits: 1 }, 0xdb],
+  ["7E1", { dataBits: 7, parity: "even", stopBits: 1 }, 0xda],
+  ["8N2", { dataBits: 8, parity: "none", stopBits: 2 }, 0xc7],
+]) {
+  test(`Ch340SerialPort.open() programs ${label} in the LCR pair`, async () => {
+    const { device, controlOut } = makeFakeDevice({ version: 0x31 });
+    const port = new Ch340SerialPort(device);
+    await port.open({ baudRate: 9600, ...options });
+
+    assert.deepEqual(
+      controlOut.filter((call) => call.request === 0x9a && call.value === 0x2518),
+      [{ request: 0x9a, value: 0x2518, index: lcr }],
+    );
+  });
+}
+
+test("Ch340SerialPort declares framing only once it knows the chip keeps it in the LCR", async () => {
+  // The version is learnt at open(); before that the port answers
+  // conservatively, and a pre-0x30 part stays 8N1 only, so the bridge refuses
+  // a framing change on it instead of reopening into a frame it never got.
+  const modern = new Ch340SerialPort(makeFakeDevice({ version: 0x31 }).device);
+  assert.equal(modern.capabilities.framing, false);
+  await modern.open({ baudRate: 9600 });
+  assert.equal(modern.capabilities.framing, true);
+
+  const old = new Ch340SerialPort(makeFakeDevice({ version: 0x27 }).device);
+  await old.open({ baudRate: 9600 });
+  assert.equal(old.capabilities.framing, false);
+});
+
+test("Ch340SerialPort.open() refuses a non-8N1 frame on a pre-0x30 chip and hands the device back", async () => {
+  const { device, controlOut } = makeFakeDevice({ version: 0x27 });
+  let released = 0;
+  let closed = 0;
+  device.releaseInterface = async () => { released += 1; };
+  device.close = async () => { closed += 1; };
+  const port = new Ch340SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, parity: "even" }),
+    /^Error: CH340: chip version 0x27 runs at 8N1 only \(asked for 8E1\)/,
+  );
+  assert.deepEqual(controlOut, [], "nothing may be configured for a frame the chip cannot carry");
+  assert.equal(released, 1);
+  assert.equal(closed, 1);
+});
+
+test("Ch340SerialPort.open() refuses a frame it cannot program before touching the chip", async () => {
+  const { device, controlIn, controlOut } = makeFakeDevice();
+  const port = new Ch340SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, stopBits: 1.5 }),
+    /CH340: cannot program 1.5 stop bits/,
+  );
+  assert.deepEqual(controlIn, []);
+  assert.deepEqual(controlOut, []);
 });
 
 test("Ch340SerialPort.open() falls back to the quirk when register reads stall", async () => {
