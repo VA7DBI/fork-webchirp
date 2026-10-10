@@ -354,3 +354,49 @@ test("Ch340SerialPort write path gives up on a transfer that never progresses", 
     chip: "CH340",
   });
 });
+
+test("Ch340SerialPort.getSignals reads the inverted modem status register", async () => {
+  // The kernel's ch341_get_status(): READ_REG of 0x0706, first byte inverted,
+  // CTS 0x01, DSR 0x02, RI 0x04, DCD 0x08.
+  const { device, controlIn } = makeFakeDevice();
+  let raw = ~(0x01 | 0x04) & 0xff;
+  const answer = device.controlTransferIn;
+  device.controlTransferIn = async (setup, length) => {
+    if (setup.request === 0x95 && setup.value === 0x0706) {
+      controlIn.push({ ...setup, length });
+      return { status: "ok", data: new DataView(new Uint8Array([raw, 0xee]).buffer) };
+    }
+    return answer(setup, length);
+  };
+  const port = new Ch340SerialPort(device);
+  await port.open({ baudRate: 9600 });
+  controlIn.length = 0;
+
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: true,
+    dataSetReady: false,
+    dataCarrierDetect: false,
+    ringIndicator: true,
+  });
+  assert.deepEqual(controlIn, [
+    { requestType: "vendor", recipient: "device", request: 0x95, value: 0x0706, index: 0, length: 2 },
+  ]);
+
+  // The high bits of the register are not modem lines and must not leak in.
+  raw = ~(0x02 | 0x08) & 0x0f;
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: false,
+    dataSetReady: true,
+    dataCarrierDetect: true,
+    ringIndicator: false,
+  });
+});
+
+test("Ch340SerialPort.getSignals reports a failed register read", async () => {
+  // Clone silicon that rejects register reads cannot report its lines either.
+  const { device } = makeFakeDevice({ readRegStatus: "stall" });
+  const port = new Ch340SerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  await assert.rejects(port.getSignals(), /CH340 control read 0x95 failed: stall/);
+});

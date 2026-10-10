@@ -288,6 +288,61 @@ function pl2303DeviceDescriptor() {
   return new DataView(deviceDescriptorBytes(PL2303_HX_DESCRIPTOR).buffer);
 }
 
+// Fold one control write into the output lines the device is driving, decoded
+// from the chip's own request, so the modem status reads below can answer
+// them back the way a jumpered adapter would. Writes that are not a line
+// change leave them alone.
+function recordLineWrite(chip, setup, lines) {
+  const { request, value } = setup;
+  if (chip === "ftdi" && request === 0x01) { // SIO_SET_MODEM_CTRL: mask high, bits low
+    if (value & 0x0100) {
+      lines.dtr = Boolean(value & 0x01);
+    }
+    if (value & 0x0200) {
+      lines.rts = Boolean(value & 0x02);
+    }
+  } else if (chip === "pl2303" && setup.requestType === "class" && request === 0x22) {
+    lines.dtr = Boolean(value & 0x01); // SET_CONTROL: absolute DTR|RTS
+    lines.rts = Boolean(value & 0x02);
+  } else if (chip === "ch340" && request === 0xa4) { // MODEM_CTRL: inverted
+    lines.dtr = !(value & 0x20);
+    lines.rts = !(value & 0x40);
+  } else if (chip === "cp2102" && request === 0x07) { // SET_MHS: mask high, bits low
+    if (value & 0x0100) {
+      lines.dtr = Boolean(value & 0x01);
+    }
+    if (value & 0x0200) {
+      lines.rts = Boolean(value & 0x02);
+    }
+  }
+}
+
+// The chip's own modem status reply with RTS jumpered to CTS and DTR to both
+// DSR and DCD, or null when the request is not a status read.
+function modemStatusReply(chip, setup, { dtr, rts }) {
+  const { request, value } = setup;
+  if (chip === "ftdi" && request === 0x05) { // POLL_MODEM_STATUS: CTS 0x10, DSR 0x20, DCD 0x80
+    const status = 0x01 | (rts ? 0x10 : 0) | (dtr ? 0x20 | 0x80 : 0);
+    return new DataView(new Uint8Array([status, 0x60]).buffer);
+  }
+  if (chip === "pl2303" && setup.requestType === "vendor" && request === 0x01 && value === 0x87) {
+    // Control-line register, active low: CTS 0x08, DSR 0x04, DCD 0x02.
+    const asserted = (rts ? 0x08 : 0) | (dtr ? 0x04 | 0x02 : 0);
+    return new DataView(new Uint8Array([~asserted & 0xff]).buffer);
+  }
+  if (chip === "ch340" && request === 0x95 && value === 0x0706) {
+    // Modem status register, inverted: CTS 0x01, DSR 0x02, DCD 0x08.
+    const asserted = (rts ? 0x01 : 0) | (dtr ? 0x02 | 0x08 : 0);
+    return new DataView(new Uint8Array([~asserted & 0xff, 0x00]).buffer);
+  }
+  if (chip === "cp2102" && request === 0x08) { // GET_MDMSTS: outputs low, inputs high
+    const status = (dtr ? 0x01 : 0) | (rts ? 0x02 : 0)
+      | (rts ? 0x10 : 0) | (dtr ? 0x20 | 0x80 : 0);
+    return new DataView(new Uint8Array([status]).buffer);
+  }
+  return null;
+}
+
 function answerControlIn(chip, setup, length) {
   if (chip === "ch340") {
     if (setup.request === 0x5f) { // read version
@@ -318,6 +373,8 @@ function answerControlIn(chip, setup, length) {
  *   noStatusHeader — FTDI only: omit the two status bytes the driver strips,
  *                    so the driver eats two payload bytes per packet
  *   stallOnce      — the first bulk IN transfer reports a stall
+ * The control lines are jumpered too (RTS to CTS, DTR to DSR and DCD): each
+ * chip's modem status read answers what its line writes last set.
  * `usb` is the WebUSB loss-event source handed to the driver (navigator.usb
  * when omitted), so a test can report the device unplugged.
  */
@@ -330,6 +387,9 @@ export function createChipLoopbackPort(chip, { faults = {}, latencyMs = 4, usb }
   const controlLog = [];
   let stalled = Boolean(faults.stallOnce);
   let deviceClosed = false;
+  // The output lines the driver last set. Every chip is wired as a jumpered
+  // adapter: RTS to CTS, DTR to DSR and DCD.
+  const lines = { dtr: false, rts: false };
 
   const inEndpointPacketSize = profile.endpoints
     .find((e) => e.type === "bulk" && e.direction === "in").packetSize;
@@ -368,11 +428,13 @@ export function createChipLoopbackPort(chip, { faults = {}, latencyMs = 4, usb }
 
     controlTransferOut: async (setup) => {
       controlLog.push({ ...setup, direction: "out" });
+      recordLineWrite(chip, setup, lines);
       return { status: "ok" };
     },
     controlTransferIn: async (setup, length) => {
       controlLog.push({ ...setup, direction: "in", length });
-      return { status: "ok", data: answerControlIn(chip, setup, length) };
+      const data = modemStatusReply(chip, setup, lines) || answerControlIn(chip, setup, length);
+      return { status: "ok", data };
     },
 
     transferOut: async (endpointNumber, data) => {

@@ -258,3 +258,46 @@ test("FtdiSerialPort write path gives up on a transfer that never progresses", a
     chip: "FTDI",
   });
 });
+
+test("FtdiSerialPort.getSignals polls the modem status and decodes its first byte", async () => {
+  // SIO_POLL_MODEM_STATUS, as the kernel's tiocmget sends it: vendor, device,
+  // to port A, two bytes back. The first is the same modem status byte that
+  // heads every bulk IN packet: CTS 0x10, DSR 0x20, RI 0x40, DCD (RLSD) 0x80;
+  // its low nibble is always 0x01 and means nothing.
+  const { device } = makeFakeDevice();
+  const requests = [];
+  let status = 0x01 | 0x10 | 0x40;
+  device.controlTransferIn = async (setup, length) => {
+    requests.push({ ...setup, length });
+    return { status: "ok", data: new DataView(new Uint8Array([status, 0x60]).buffer) };
+  };
+  const port = new FtdiSerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: true,
+    dataSetReady: false,
+    dataCarrierDetect: false,
+    ringIndicator: true,
+  });
+  assert.deepEqual(requests, [
+    { requestType: "vendor", recipient: "device", request: 0x05, value: 0, index: 1, length: 2 },
+  ]);
+
+  status = 0x01 | 0x20 | 0x80;
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: false,
+    dataSetReady: true,
+    dataCarrierDetect: true,
+    ringIndicator: false,
+  });
+});
+
+test("FtdiSerialPort.getSignals reports a failed status request", async () => {
+  const { device } = makeFakeDevice();
+  device.controlTransferIn = async () => ({ status: "stall" });
+  const port = new FtdiSerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  await assert.rejects(port.getSignals(), /FTDI modem status request failed: stall/);
+});

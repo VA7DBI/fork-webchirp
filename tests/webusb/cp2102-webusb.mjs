@@ -485,9 +485,8 @@ test("Cp2102SerialPort.setSignals writes only the lines that change", async () =
 });
 
 test("Cp2102SerialPort.getSignals decodes the modem status byte", async () => {
-  // The other three WebUSB drivers cannot read input control lines at all;
-  // this family answers GET_MDMSTS with them, which is what lets the loopback
-  // suite's control-line case run on the WebUSB transport.
+  // This family answers GET_MDMSTS with the input lines, which is what lets
+  // the loopback suite's control-line case run on a CP210x.
   const { device } = makeFakeDevice({ modemStatus: 0x10 | 0x40 });
   const port = new Cp2102SerialPort(device);
   await port.open({ baudRate: 9600 });

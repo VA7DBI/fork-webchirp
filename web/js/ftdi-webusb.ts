@@ -30,6 +30,7 @@ const SIO_SET_MODEM_CTRL = 0x01;
 const SIO_SET_FLOW_CTRL = 0x02;
 const SIO_SET_BAUD_RATE = 0x03;
 const SIO_SET_DATA = 0x04;
+const SIO_POLL_MODEM_STATUS = 0x05;
 const SIO_SET_LATENCY_TIMER = 0x09;
 
 // SIO_RESET wValue variants: 0 resets the port, 1/2 purge the RX/TX FIFOs.
@@ -64,6 +65,13 @@ const DATA_PARITY_ODD = 0x1 << 8;
 const DATA_PARITY_EVEN = 0x2 << 8;
 const DATA_STOP_BITS_1 = 0x0 << 11;
 const DATA_STOP_BITS_2 = 0x2 << 11;
+
+// Modem status bits, in the first byte of the SIO_POLL_MODEM_STATUS reply (the
+// same byte that heads every bulk IN packet), from the kernel's ftdi_sio.h.
+const MODEM_STATUS_CTS = 0x10;
+const MODEM_STATUS_DSR = 0x20;
+const MODEM_STATUS_RI = 0x40;
+const MODEM_STATUS_DCD = 0x80; // RLSD
 
 // Control requests other than baud target port/interface A (libftdi index 1).
 const PORT_INDEX = 1;
@@ -250,6 +258,35 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     if (value !== 0) {
       await this._controlOut(SIO_SET_MODEM_CTRL, value, PORT_INDEX);
     }
+  }
+
+  // Input control lines, polled with SIO_POLL_MODEM_STATUS as the kernel's
+  // tiocmget does (ftdi_get_modem_status), rather than read off the bulk IN
+  // headers: a poll answers now, even when no reader is pulling packets. The
+  // loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const result = await this.device.controlTransferIn({
+      requestType: "vendor",
+      recipient: "device",
+      request: SIO_POLL_MODEM_STATUS,
+      value: 0,
+      index: PORT_INDEX,
+    }, 2);
+    if (result && result.status && result.status !== "ok") {
+      throw new Error(`FTDI modem status request failed: ${result.status}`);
+    }
+    // The kernel accepts a 1-byte reply (the original SIO answers only that).
+    const data = result?.data;
+    if (!data || data.byteLength < 1) {
+      throw new Error("FTDI: modem status request returned no data");
+    }
+    const status = data.getUint8(0);
+    return {
+      clearToSend: Boolean(status & MODEM_STATUS_CTS),
+      dataSetReady: Boolean(status & MODEM_STATUS_DSR),
+      dataCarrierDetect: Boolean(status & MODEM_STATUS_DCD),
+      ringIndicator: Boolean(status & MODEM_STATUS_RI),
+    };
   }
 
   _setupStreams() {

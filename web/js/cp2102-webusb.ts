@@ -1,7 +1,7 @@
 // Silicon Labs CP2102 USB-UART driver implemented over WebUSB, implementing
 // the same serial transport contract (web/js/serial-transport.ts) as the
-// FTDI, PL2303 and CH340 drivers -- plus getSignals, which only this chip can
-// answer -- so the serial bridge can use any of them interchangeably.
+// FTDI, PL2303 and CH340 drivers, getSignals included, so the serial bridge
+// can use any of them interchangeably.
 //
 // Scope is the single-UART CP210x parts that speak the vendor protocol —
 // CP2101/2/3/4/9 and CP2102N. The multi-UART CP2105/CP2108 are out of scope,
@@ -615,9 +615,8 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     });
   }
 
-  // Input control lines, which the other three WebUSB drivers cannot report at
-  // all — this family answers GET_MDMSTS with a single byte carrying both the
-  // output lines it is driving and the input lines it sees.
+  // Input control lines: this family answers GET_MDMSTS with a single byte
+  // carrying both the output lines it is driving and the input lines it sees.
   async getSignals() {
     const data = await this._controlIn(REQ_GET_MDMSTS, 1);
     if (!data || data.byteLength < 1) {

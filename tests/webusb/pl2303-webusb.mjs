@@ -357,3 +357,43 @@ test("Pl2303SerialPort write path gives up on a transfer that never progresses",
     chip: "PL2303",
   });
 });
+
+for (const [chip, descriptor, hxProbeSucceeds, request, register, bits] of [
+  // usb-serial-for-android's GET_CONTROL_REQUEST / GET_CONTROL_HXN_REQUEST maps.
+  ["HX", HX_DESCRIPTOR, true, 0x01, 0x87, { cts: 0x08, dsr: 0x04, dcd: 0x02, ri: 0x01 }],
+  ["HXN", HXN_DESCRIPTOR, false, 0x81, 0x80, { cts: 0x08, dsr: 0x20, dcd: 0x40, ri: 0x80 }],
+]) {
+  test(`${chip} getSignals reads the active-low control-line register`, async () => {
+    const { device, controlIn } = makeFakeDevice({ descriptor, hxProbeSucceeds });
+    let asserted = bits.cts | bits.ri;
+    const answer = device.controlTransferIn;
+    device.controlTransferIn = async (setup, length) => {
+      if (setup.requestType === "vendor" && setup.value === register) {
+        controlIn.push({ ...setup, length });
+        return { status: "ok", data: new DataView(new Uint8Array([~asserted & 0xff]).buffer) };
+      }
+      return answer(setup, length);
+    };
+    const port = new Pl2303SerialPort(device);
+    await port.open({ baudRate: 9600 });
+    controlIn.length = 0;
+
+    assert.deepEqual(await port.getSignals(), {
+      clearToSend: true,
+      dataSetReady: false,
+      dataCarrierDetect: false,
+      ringIndicator: true,
+    });
+    assert.deepEqual(controlIn, [
+      { requestType: "vendor", recipient: "device", request, value: register, index: 0, length: 1 },
+    ]);
+
+    asserted = bits.dsr | bits.dcd;
+    assert.deepEqual(await port.getSignals(), {
+      clearToSend: false,
+      dataSetReady: true,
+      dataCarrierDetect: true,
+      ringIndicator: false,
+    });
+  });
+}

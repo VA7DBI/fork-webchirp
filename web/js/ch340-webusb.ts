@@ -66,6 +66,15 @@ const LCR_CS7 = 0x02;
 // programs, so on those the line stays at its 8N1 power-on default.
 const LCR_MIN_VERSION = 0x30;
 
+// The register pair the kernel reads the modem status from (ch341_get_status),
+// and the input-line bits of its first byte, which the chip reports inverted.
+const REG_MODEM_STATUS = 0x0706;
+const MSR_CTS = 0x01;
+const MSR_DSR = 0x02;
+const MSR_RI = 0x04;
+const MSR_DCD = 0x08;
+const MSR_ALL = 0x0f;
+
 // Modem control bits, as held in the driver-side MCR shadow.
 const MCR_DTR = 0x20;
 const MCR_RTS = 0x40;
@@ -389,6 +398,25 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
       return;
     }
     await this._writeModemControl(lines);
+  }
+
+  // Input control lines, read from register 0x0706 the way the kernel's
+  // ch341_get_status() reads them at open: the chip reports them inverted, so
+  // the byte is complemented before decoding. Polled rather than taken from
+  // the interrupt endpoint (which this driver never reads), so it answers now.
+  // The loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const data = await this._controlIn(REQ_READ_REG, REG_MODEM_STATUS, 0, 2);
+    if (!data || data.byteLength < 1) {
+      throw new Error("CH340: modem status request returned no data");
+    }
+    const status = ~data.getUint8(0) & MSR_ALL;
+    return {
+      clearToSend: Boolean(status & MSR_CTS),
+      dataSetReady: Boolean(status & MSR_DSR),
+      dataCarrierDetect: Boolean(status & MSR_DCD),
+      ringIndicator: Boolean(status & MSR_RI),
+    };
   }
 
   _setupStreams() {

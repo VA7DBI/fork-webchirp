@@ -131,9 +131,11 @@ test("control-line loopback passes when jumpered and fails when not wired throug
 });
 
 test("the control-line case skips itself on ports with no getSignals", async () => {
-  // The WebUSB chip drivers implement setSignals but not getSignals, so on
-  // those the case must skip rather than fail a jumpered adapter.
-  const { port } = createChipLoopbackPort("ch340");
+  // A transport may drive DTR/RTS without being able to read input lines
+  // back (the CDC polyfill has no getSignals), so on those the case must skip
+  // rather than fail a jumpered adapter.
+  const port = createEchoPort();
+  delete port.getSignals;
   const summary = await runLoopbackSuite(port, { ...SINGLE_BAUD, controlLines: true });
 
   assert.deepEqual(statusOf(summary, "control-lines"), ["skip"]);
@@ -146,6 +148,16 @@ for (const chip of CHIP_NAMES) {
     const summary = await runLoopbackSuite(port, { ...FAST_SUITE_OPTIONS, packetSize });
 
     assert.equal(summary.failed, 0, reportOn(summary));
+  });
+
+  test(`the ${chip} driver reads jumpered control lines back`, async () => {
+    // Every chip driver reports its input lines (getSignals), so the case runs
+    // rather than skipping. The fake answers each chip's own status read from
+    // what its own line writes set, so this round-trips both encodings.
+    const { port, packetSize } = createChipLoopbackPort(chip);
+    const summary = await runLoopbackSuite(port, { ...SINGLE_BAUD, packetSize, controlLines: true });
+
+    assert.deepEqual(statusOf(summary, "control-lines"), ["pass"], reportOn(summary));
   });
 
   test(`the ${chip} driver recovers from a stalled bulk IN endpoint`, async () => {

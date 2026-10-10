@@ -63,6 +63,16 @@ const RESET_HXN_TX_PIPE = 0x02;
 const FLOWCONTROL_HXN_REGISTER = 0x0a;
 const FLOWCONTROL_HXN_NONE = 0xff;
 
+// Input control line registers, read with the chip's own vendor read request,
+// from usb-serial-for-android's ProlificSerialDriver (GET_CONTROL_REQUEST and
+// GET_CONTROL_HXN_REQUEST). The lines are active low, and the two register
+// maps place them differently. The kernel has no poll for these: it caches
+// the UART state notifications from the interrupt endpoint instead.
+const GET_CONTROL_REGISTER = 0x87;
+const GET_CONTROL_HXN_REGISTER = 0x80;
+const GET_CONTROL_LINES = { cts: 0x08, dsr: 0x04, dcd: 0x02, ri: 0x01 };
+const GET_CONTROL_HXN_LINES = { cts: 0x08, dsr: 0x20, dcd: 0x40, ri: 0x80 };
+
 // CDC-style class requests on the interface (shared by all chip types).
 const GET_LINE_REQUEST = 0x21;
 const SET_LINE_REQUEST = 0x20;
@@ -385,6 +395,29 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
     await this._classInterfaceOut(SET_CONTROL_REQUEST, lines, undefined);
     this._controlLines = lines;
+  }
+
+  // Input control lines, polled from the chip's control-line register (0x87,
+  // or 0x80 on HXN silicon), whose bits are active low. Polled because WebUSB
+  // gives no cheap way to keep the interrupt endpoint's notifications cached,
+  // and a poll answers now. Taken from usb-serial-for-android, which reads the
+  // same register for its first answer; not yet measured on an adapter. The
+  // loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const hxn = this._isHxn();
+    const result = await this._vendorRead(hxn ? GET_CONTROL_HXN_REGISTER : GET_CONTROL_REGISTER, 0);
+    const data = result?.data;
+    if (!data || data.byteLength < 1) {
+      throw new Error("PL2303: control line status request returned no data");
+    }
+    const status = data.getUint8(0);
+    const lines = hxn ? GET_CONTROL_HXN_LINES : GET_CONTROL_LINES;
+    return {
+      clearToSend: !(status & lines.cts),
+      dataSetReady: !(status & lines.dsr),
+      dataCarrierDetect: !(status & lines.dcd),
+      ringIndicator: !(status & lines.ri),
+    };
   }
 
   _setupStreams() {
