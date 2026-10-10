@@ -1032,6 +1032,12 @@ export function createCityField({
   // document.activeElement so the check works the same in the headless tests,
   // whose DOM has no active element.
   let inputFocused = false;
+  // True from a press on the erase button until the input is next focused.
+  // The press moves focus off the input, and the blur that causes would
+  // otherwise commit the highlighted suggestion -- moving the coordinates to
+  // a place the user was in the middle of throwing away. Reset on focus rather
+  // than on pointerup, because a press dragged off the button never sends one.
+  let clearPointerActive = false;
   let activeIndex = -1;
   let selected = initial.city || null;
   // Bumped on every keystroke, commit and cancel, so a response that lands
@@ -1257,13 +1263,23 @@ export function createCityField({
 
   // Leaving the field takes the top suggestion, which is the field's whole
   // promise: type enough of a name, move on, and the position is set.
-  input.addEventListener("focus", () => { inputFocused = true; });
+  input.addEventListener("focus", () => {
+    inputFocused = true;
+    clearPointerActive = false;
+  });
 
   input.addEventListener("blur", () => {
     inputFocused = false;
     // Focus left because a finger landed in the list; that gesture decides
     // for itself whether it is a tap or a scroll.
     if (listPointerActive) {
+      return;
+    }
+    // Focus left for the erase button: the text is about to go, so nothing in
+    // the list may be committed on its way out.
+    if (clearPointerActive) {
+      closeList();
+      searchGeneration += 1;
       return;
     }
     if (!commitActive()) {
@@ -1278,7 +1294,11 @@ export function createCityField({
   // fine-tuned on the map after the place was picked, and the Coordinates row
   // has its own button. The shell is told so the place is not restored on the
   // next open.
+  clearButton.addEventListener("pointerdown", () => {
+    clearPointerActive = true;
+  });
   clearButton.addEventListener("click", () => {
+    clearPointerActive = false;
     clear();
     if (typeof onClear === "function") {
       onClear();

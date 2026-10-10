@@ -1013,6 +1013,38 @@ test("the place name's clear button sits beside the box and erases the chosen pl
   assert.equal(clears.length, 1, "the shell hears about it, so the place is not restored");
 });
 
+test("pressing the place name's clear button with the list open commits nothing", async () => {
+  const { field, input, list, clearButton, selections, clears } = buildCityField();
+  await typeCity(input, "manch");
+  assert.equal(list.hidden, false);
+
+  // A real press: pointerdown on the button, the blur it causes on the input,
+  // then the click. The blur would otherwise take the highlighted Manchester
+  // and move the coordinates there on the way to erasing the name.
+  await dispatch(clearButton, "pointerdown", { pointerType: "mouse" });
+  await dispatch(input, "blur");
+  await dispatch(clearButton, "click");
+
+  assert.deepEqual(selections, [], "no city reached the shell, so the position did not move");
+  assert.equal(input.value, "");
+  assert.equal(field.value(), null);
+  assert.equal(list.hidden, true);
+  assert.equal(clears.length, 1);
+});
+
+test("a press dragged off the clear button does not stop the next blur committing", async () => {
+  const { input, clearButton, selections } = buildCityField();
+  await typeCity(input, "manch");
+  await dispatch(clearButton, "pointerdown", { pointerType: "mouse" });
+  await dispatch(input, "blur");
+  // Released somewhere else: no click. Back in the box, typing and leaving
+  // must commit again as usual.
+  await dispatch(input, "focus");
+  await typeCity(input, "manch");
+  await dispatch(input, "blur");
+  assert.equal(selections.length, 1);
+});
+
 test("a lookup that finds nothing says so instead of leaving a stale list", async () => {
   const { input, list, note } = buildCityField({ results: [] });
   await typeCity(input, "zzzz");
