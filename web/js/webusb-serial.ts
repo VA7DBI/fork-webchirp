@@ -49,9 +49,16 @@ async function defaultLoadCdcSerialPort(): Promise<new (device: USBDevice) => Se
   return mod.SerialPort;
 }
 
-// What the polyfill can do: it sends open()'s framing in SET_LINE_CODING and
-// SET_CONTROL_LINE_STATE for DTR/RTS, and like Web Serial it changes settings
-// only through close() and open().
+// What the polyfill can do, read from the pinned version's source
+// (web-serial-polyfill 1.0.15, dist/serial.js): open() validates
+// dataBits/stopBits/parity against Web Serial's values and sends them in
+// SET_LINE_CODING with the CDC encodings (bCharFormat 0/2, bParityType
+// 0/1/2), failing the open when the device refuses it; setSignals() sends
+// DTR/RTS in SET_CONTROL_LINE_STATE. The polyfill also has an in-place
+// reconfigure(), but the wrapper does not forward it, so a change goes
+// through close() and open() as on Web Serial. tests/e2e/web-serial-polyfill.mjs
+// loads the CDN module and holds it to this; whether an adapter's firmware
+// honours the line coding is unmeasured.
 export const CDC_CAPABILITIES: Readonly<SerialTransportCapabilities> = Object.freeze({
   framing: true,
   signals: true,
@@ -83,7 +90,7 @@ export class CdcSerialPort extends WebUsbTransport implements SerialTransport {
     }
   }
 
-  // The polyfill honours framing, unlike the chip drivers.
+  // The polyfill sends the frame in SET_LINE_CODING (CDC_CAPABILITIES).
   override get capabilities(): Readonly<SerialTransportCapabilities> {
     return CDC_CAPABILITIES;
   }
