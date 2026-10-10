@@ -11,6 +11,7 @@ import {
   domEvent,
   flushMicrotasks,
   keydownEvent,
+  selectRadioBySearch,
   setInputFiles,
 } from "../support/ui-interactions.mjs";
 import { withRadioSessions } from "../support/fake-runtime-api.mjs";
@@ -31,6 +32,17 @@ const RADIO = {
   module: "h777",
   className: "H777Radio",
   key: "h777:H777Radio",
+  isLiveRadio: false,
+};
+
+// A second driver to switch to. Its extras share none of RADIO's names, which
+// is what makes a save carried across the switch a silent loss at upload.
+const OTHER_RADIO = {
+  vendor: "Acme",
+  model: "Other",
+  module: "acme",
+  className: "AcmeRadio",
+  key: "acme:AcmeRadio",
   isLiveRadio: false,
 };
 
@@ -83,7 +95,7 @@ async function boot({ rows = IMAGE_ROWS, getChannelExtra } = {}) {
   const ui = createUiController();
   const calls = [];
   ui.setRuntimeApi(withRadioSessions({
-    listRadios: async () => ({ radios: [RADIO] }),
+    listRadios: async () => ({ radios: [RADIO, OTHER_RADIO] }),
     getRuntimeInfo: async () => ({ chirpRevision: "test-revision" }),
     getDefaultSchema: async () => ({ headers: HEADERS }),
     getRadioMetadata: async () => ({ headers: HEADERS, columns: {} }),
@@ -283,6 +295,30 @@ test("a save is refused once the channel list has been replaced under it", async
     detached.__extra,
     { bcl: false, scode: "3" },
     "the detached row must not be edited as if it were still in the editor",
+  );
+});
+
+test("a save is refused once another radio has been selected under it", async () => {
+  const { document, rows } = await boot();
+  await openExtraModal(document, 0);
+  controlFor(document, "scode").value = "2";
+  // Choosing another radio keeps the rows and leaves this modal open, but the
+  // fields on screen are the first driver's: stored, their names would be
+  // skipped at upload by a driver that does not have them.
+  selectRadioBySearch(document, "Acme Other");
+  await flushMicrotasks();
+  assert.ok(rows().length > 0, "a radio switch keeps the channel list");
+  await submitModal(document);
+
+  assert.equal(modalIsOpen(document), false);
+  assert.deepEqual(
+    rows()[0].__extra,
+    { bcl: false, scode: "3" },
+    "the old driver's values must not be stored on the row",
+  );
+  assert.match(
+    document.querySelector("#debug-output").value,
+    /selected radio changed while the extra settings were open/,
   );
 });
 
