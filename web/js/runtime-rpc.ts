@@ -102,7 +102,6 @@ export interface SettingGroupNode extends SettingNodeBase {
 
 export interface SettingLeafNode extends SettingNodeBase {
   kind: "setting";
-  mutable: boolean;
   volatile: boolean;
   warning: string | null;
   values: SettingValueMeta[];

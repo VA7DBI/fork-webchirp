@@ -151,12 +151,10 @@ def _serialize_setting_node(
     if isinstance(node, chirp_settings.RadioSetting):
         raw_values = node.value if isinstance(node.value, list) else [node.value]
         values = []
-        all_mutable = True
         for value_index, value in enumerate(raw_values):
             serialized = _serialize_setting_value(value)
             serialized["index"] = int(value_index)
             values.append(serialized)
-            all_mutable = all_mutable and bool(serialized["mutable"])
 
         current_value = values[0]["current"] if len(values) == 1 else None
         warning = node.get_warning(current_value) if len(values) == 1 else None
@@ -166,7 +164,6 @@ def _serialize_setting_node(
             "label": str(node.get_shortname()),
             "doc": getattr(node, "__doc__", None),
             "path": _setting_path(path_parts + [node.get_name()]),
-            "mutable": bool(all_mutable),
             "volatile": bool(getattr(node, "volatile", False)),
             "warning": warning,
             "values": values,

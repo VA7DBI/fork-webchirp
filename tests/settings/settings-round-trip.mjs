@@ -319,3 +319,20 @@ test("a setting CHIRP could not load does not abort the write for every other on
     assert.equal(result.after, result.before, `${field} was rewritten while being skipped`);
   }
 });
+
+// A RadioSetting holding several values carries mutability on each value, not
+// on the setting: one locked value must not lock its siblings (issue 98).
+test("a multi-value setting reports mutability per value only", async () => {
+  const { harness } = await context();
+  const node = await harness.runPythonJson(
+    `
+_open = chirp_settings.RadioSettingValueString(0, 8, "Open")
+_locked = chirp_settings.RadioSettingValueString(0, 8, "Locked")
+_locked.set_mutable(False)
+_setting = chirp_settings.RadioSetting("pair", "Pair", _open, _locked)
+json.dumps(_serialize_setting_node(_setting, []))
+    `,
+  );
+  assert.equal("mutable" in node, false, "the setting itself carries no aggregate flag");
+  assert.deepEqual(node.values.map((value) => value.mutable), [true, false]);
+});
