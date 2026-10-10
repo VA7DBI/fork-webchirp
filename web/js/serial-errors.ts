@@ -21,6 +21,42 @@ export const PORT_SELECTION_CANCELLED = "PortSelectionCancelledError";
 // A capability limit stays recognizable after Pyodide flattens the exception.
 export const SERIAL_UNSUPPORTED = "SerialUnsupportedError";
 
+// Another driver holds the cable's USB interface -- Android's own kernel
+// driver, most often -- so WebUSB cannot claim it. Named for the same reason
+// as SERIAL_UNSUPPORTED: the cause is on the user's machine, and reporting
+// recognizes it by name after Pyodide has flattened it into a JsException.
+export const USB_INTERFACE_BUSY = "UsbInterfaceBusyError";
+
+// Build the error a chip driver throws when claimInterface is refused.
+export function createUsbInterfaceBusyError(message: string): Error {
+  const error = new Error(message);
+  error.name = USB_INTERFACE_BUSY;
+  return error;
+}
+
+// Recognize that outcome by name, in JS or after crossing Python (jsErrorName
+// reads a RuntimeCallError's jsCause).
+export function isUsbInterfaceBusy(error: unknown): boolean {
+  return jsErrorName(error) === USB_INTERFACE_BUSY;
+}
+
+// The named transport failures a wrapper must not erase: reporting recognizes
+// them by name alone, so a plain Error around one would be reported after all.
+const PRESERVED_TRANSPORT_FAILURES: readonly string[] = [USB_INTERFACE_BUSY];
+
+// Wrap a transport failure in a sentence of the caller's, keeping the failure
+// as the cause and, when it is one of the names above, its name too -- the
+// serial bridge's re-rate and reconfigure paths reopen the port, which can
+// fail exactly as the first open did.
+export function wrapTransportError(message: string, cause: unknown): Error {
+  const error = new Error(message, { cause });
+  const name = jsErrorName(cause);
+  if (PRESERVED_TRANSPORT_FAILURES.includes(name)) {
+    error.name = name;
+  }
+  return error;
+}
+
 // Name transport capability refusals without coupling reporting to UI wording.
 export function createSerialUnsupportedError(message: string): Error {
   const error = new Error(message);
