@@ -1344,6 +1344,20 @@ button:disabled {
   line-height: 1.5;
 }
 
+/* The empty state's suggestions are a list: the same text size and leading as
+   the card's paragraphs, with a narrow indent so the bullets stay inside the
+   card's padding instead of the browser's 40px default. */
+.channel-empty-steps {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.channel-empty-steps li + li {
+  margin-top: 0.3rem;
+}
+
 .channel-empty-card .channel-empty-hint {
   margin-top: 0.55rem;
   font-size: 0.83rem;
