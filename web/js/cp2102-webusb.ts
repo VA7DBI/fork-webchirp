@@ -15,9 +15,20 @@
 // and the bulk IN endpoint carries raw UART payload with no status header,
 // provided event-insertion mode is off. This driver never turns event mode on
 // and clears any it inherited at open, so 0xEC is an ordinary data byte.
-import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  framingLabel,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 // Silicon Labs' vendor id. The chooser filters on it vendor-wide, because ~150
@@ -72,12 +83,15 @@ const UART_ENABLE = 0x0001;
 const UART_DISABLE = 0x0000;
 const PURGE_ALL = 0x000f;
 
-// Line control: 8 data bits, no parity, 1 stop bit — the only framing CHIRP
-// uses, matching the other three drivers.
-const BITS_DATA_8 = 0x0800;
+// SET_LINE_CTL wValue fields, from the kernel's cp210x.c: the data bit count
+// in bits 8-11, parity in bits 4-7, stop bits in bits 0-3. Mark/space parity,
+// 1.5 stop bits and 5/6/9 data bits exist too, but the serial contract never
+// asks for them.
 const BITS_PARITY_NONE = 0x0000;
+const BITS_PARITY_ODD = 0x0010;
+const BITS_PARITY_EVEN = 0x0020;
 const BITS_STOP_1 = 0x0000;
-const LINE_CTL_8N1 = BITS_DATA_8 | BITS_PARITY_NONE | BITS_STOP_1;
+const BITS_STOP_2 = 0x0002;
 
 // SET_MHS wValue / GET_MDMSTS reply bits. The write mask is what makes SET_MHS
 // a partial update: a line only changes if its WRITE bit is set.
@@ -179,6 +193,27 @@ export function isCp2102Device(device: Partial<USBDevice> | null | undefined): b
   return cp2102RejectionReason(device) === "";
 }
 
+// The SET_LINE_CTL wValue for a frame, as the kernel's cp210x_set_termios()
+// encodes it: 8N1 is 0x0800, 8E1 0x0820, 7E1 0x0720, 8N2 0x0802, 8O1 0x0810.
+// The CP2101 only does 8 data bits and 1 stop bit (the kernel forces CS8 and
+// clears CSTOPB on it); asking it for anything else is refused here, by name,
+// rather than quietly programmed as something else.
+export function cp2102LineControl(
+  { dataBits, parity, stopBits }: ChipFraming,
+  partNumber: number = CP210X_PARTNUM.UNKNOWN,
+): number {
+  if (partNumber === CP210X_PARTNUM.CP2101 && (dataBits !== 8 || stopBits !== 1)) {
+    throw new Error(
+      `CP2102: a CP2101 supports only 8 data bits and 1 stop bit `
+      + `(asked for ${framingLabel({ dataBits, parity, stopBits })})`,
+    );
+  }
+  const parityBits = parity === "odd"
+    ? BITS_PARITY_ODD
+    : parity === "even" ? BITS_PARITY_EVEN : BITS_PARITY_NONE;
+  return (dataBits << 8) | parityBits | (stopBits === 2 ? BITS_STOP_2 : BITS_STOP_1);
+}
+
 // Rates the CP2101/2/3 baud generator actually produces, from AN205 Table 1:
 // each entry is [rate, highest request that maps to it].
 const AN205_TABLE = [
@@ -273,12 +308,6 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
   _claimed: boolean;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: SET_LINE_CTL is issued as LINE_CTL_8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -301,6 +330,13 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
   // replaces it with what the descriptor actually reports.
   get packetSize() {
     return this._inPacketSize;
+  }
+
+  // open() programs dataBits/stopBits/parity through SET_LINE_CTL, so a
+  // framing change is a reopen like a rate change. The CP2101's narrower
+  // range is refused by open() itself, naming the part (cp2102LineControl).
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return WEBUSB_FRAMING_CHIP_CAPABILITIES;
   }
 
   // Vendor request to the interface, value carried entirely in wValue.
@@ -462,6 +498,9 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame outside the contract
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "CP2102");
     // close() latches _closed and the read loop exits as soon as it is set;
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
@@ -479,14 +518,14 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     // the later ones. The app's bridge happens to tear down after a failed
     // open, but the loopback page only closes a port that opened.
     try {
-      await this._initialize(baudRate);
+      await this._initialize(baudRate, framing);
     } catch (error) {
       await this._releaseDevice();
       throw error;
     }
   }
 
-  async _initialize(baudRate: number): Promise<void> {
+  async _initialize(baudRate: number, framing: ChipFraming): Promise<void> {
     const configuration = await this._activeConfiguration("CP2102");
     const iface = configuration.interfaces[0];
     this._interfaceNumber = iface.interfaceNumber;
@@ -513,6 +552,9 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     }
 
     this.partNumber = await this._readPartNumber();
+    // Encoded before anything is configured: the CP2101 refuses frames the
+    // others take, and that has to fail with the UART untouched.
+    const lineControl = cp2102LineControl(framing, this.partNumber);
     // Take the UART down before bringing it up. Event-insertion mode — which
     // escapes 0xEC and splices line/modem status into the data stream — is
     // cleared by a USB reset or by IFC_ENABLE(UART_DISABLE), and *not* by
@@ -523,7 +565,7 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     await this._controlOut(REQ_IFC_ENABLE, UART_DISABLE);
     await this._controlOut(REQ_IFC_ENABLE, UART_ENABLE);
     await this._setBaudRate(baudRate);
-    await this._controlOut(REQ_SET_LINE_CTL, LINE_CTL_8N1);
+    await this._controlOut(REQ_SET_LINE_CTL, lineControl);
     // Start with both control lines deasserted and the shadow in sync, so the
     // first setSignals() call always reflects what the chip is actually doing.
     // The flow block carries DTR/RTS as well, so it is written first and
