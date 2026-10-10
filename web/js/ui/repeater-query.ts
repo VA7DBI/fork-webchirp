@@ -234,6 +234,8 @@ export function createRepeaterQuery(ctx: UiContext) {
           // and must not take over the status line the real query uses.
           onError: (error) => log.logDebug(`CITY LOOKUP FAILED ${errorDetails(error)}`),
           onSelect: (city) => onCitySelected(city),
+          // Erased by its own button: forget it, or the next open restores it.
+          onClear: () => { cityState.city = null; },
           // Reopening the modal shows the place last chosen, in step with the
           // coordinates the position field restores beside it.
           initial: cityState,

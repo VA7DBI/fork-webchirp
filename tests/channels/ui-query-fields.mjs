@@ -162,7 +162,7 @@ function buildPositionField(config = {}) {
   });
   const [, coordRow, , geoRow] = field.nodes;
   const [preview] = field.tailNodes;
-  const [latitude, longitude] = coordRow.children;
+  const [latitude, longitude, clearCoords] = coordRow.children;
   const locator = geoRow.children[0];
   const [previewCanvas, previewEmpty, previewCount, previewAttribution] = preview.children;
   return {
@@ -170,6 +170,7 @@ function buildPositionField(config = {}) {
     coordRow,
     latitude,
     longitude,
+    clearCoords,
     locator,
     geoRow,
     changes,
@@ -239,15 +240,19 @@ test("position field renders the locator row with the geolocate and clear button
 });
 
 test("latitude and longitude share one labelled row and name themselves", () => {
-  const { field, coordRow, latitude, longitude } = buildPositionField();
+  const { field, coordRow, latitude, longitude, clearCoords } = buildPositionField();
   const [coordLabel] = field.nodes;
   assert.equal(coordLabel.tagName, "LABEL");
   assert.equal(coordLabel.textContent, "Coordinates");
   assert.equal(coordLabel.htmlFor, latitude.id);
-  // One row holding both boxes and nothing else: the row is what keeps the
-  // pair on a single grid line under the single label above.
+  // One row holding both boxes and their erase button: the row is what keeps
+  // the pair on a single grid line under the single label above.
   assert.equal(coordRow.className, "modal-coord-row");
-  assert.deepEqual(Array.from(coordRow.children), [latitude, longitude]);
+  assert.deepEqual(Array.from(coordRow.children), [latitude, longitude, clearCoords]);
+  assert.equal(clearCoords.type, "button");
+  assert.equal(clearCoords.className, "modal-geo-button");
+  assert.equal(clearCoords.textContent, "🗑️");
+  assert.equal(clearCoords.getAttribute("aria-label"), "Clear coordinates");
   // With no per-box label left, the placeholder is the only thing that says
   // which half is which, so it has to carry the word and not just an example.
   assert.match(latitude.placeholder, /^Latitude /);
@@ -266,6 +271,17 @@ test("the clear button wipes all three fields and notifies onChange", async () =
   const { field, latitude, longitude, locator, geoRow, changes } = buildPositionField();
   field.setPosition(51.520833, -0.125);
   await dispatch(geoRow.children[2], "click");
+  assert.equal(latitude.value, "");
+  assert.equal(longitude.value, "");
+  assert.equal(locator.value, "");
+  assert.equal(field.value(), null);
+  assert.deepEqual(changes.at(-1), ["", ""]);
+});
+
+test("the coordinates' clear button wipes the pair and the locator derived from it", async () => {
+  const { field, latitude, longitude, locator, clearCoords, changes } = buildPositionField();
+  field.setPosition(51.520833, -0.125);
+  await dispatch(clearCoords, "click");
   assert.equal(latitude.value, "");
   assert.equal(longitude.value, "");
   assert.equal(locator.value, "");
@@ -831,6 +847,7 @@ const MANCHESTER_NH = {
 function buildCityField({ results = [MANCHESTER, MANCHESTER_NH], fail = null } = {}) {
   const calls = [];
   const selections = [];
+  const clears = [];
   const field = createCityField({
     search: async (query) => {
       calls.push({ query });
@@ -840,10 +857,12 @@ function buildCityField({ results = [MANCHESTER, MANCHESTER_NH], fail = null } =
       return results;
     },
     onSelect: (city) => selections.push(city),
+    onClear: () => clears.push(true),
   });
-  const [, wrapper] = field.nodes;
+  const [, row] = field.nodes;
+  const [wrapper, clearButton] = row.children;
   const [input, list, note] = wrapper.children;
-  return { field, input, list, note, calls, selections };
+  return { field, row, wrapper, input, list, note, clearButton, calls, selections, clears };
 }
 
 async function typeCity(input, text) {
@@ -853,8 +872,8 @@ async function typeCity(input, text) {
 }
 
 test("city field labels a text input and hides its suggestion list until it has one", () => {
-  const { field, input, list } = buildCityField();
-  const [label, wrapper] = field.nodes;
+  const { field, input, list, wrapper } = buildCityField();
+  const [label] = field.nodes;
   assert.equal(label.tagName, "LABEL");
   assert.equal(label.textContent, "Place name");
   assert.equal(label.htmlFor, input.id);
@@ -973,6 +992,59 @@ test("clearing the box closes the list and asks for nothing", async () => {
   assert.equal(note.hidden, true);
 });
 
+test("the place name's clear button sits beside the box and erases the chosen place", async () => {
+  const { field, row, input, list, clearButton, selections, clears } = buildCityField();
+  assert.equal(row.className, "modal-city-row");
+  assert.equal(clearButton, field.clearButton);
+  assert.equal(clearButton.type, "button");
+  assert.equal(clearButton.className, "modal-geo-button");
+  assert.equal(clearButton.textContent, "🗑️");
+  assert.equal(clearButton.getAttribute("aria-label"), "Clear place name");
+
+  await typeCity(input, "manch");
+  await dispatch(input, "keydown", { key: "Enter" });
+  assert.equal(selections.length, 1);
+  assert.ok(field.value());
+
+  await dispatch(clearButton, "click");
+  assert.equal(input.value, "");
+  assert.equal(field.value(), null);
+  assert.equal(list.hidden, true);
+  assert.equal(clears.length, 1, "the shell hears about it, so the place is not restored");
+});
+
+test("pressing the place name's clear button with the list open commits nothing", async () => {
+  const { field, input, list, clearButton, selections, clears } = buildCityField();
+  await typeCity(input, "manch");
+  assert.equal(list.hidden, false);
+
+  // A real press: pointerdown on the button, the blur it causes on the input,
+  // then the click. The blur would otherwise take the highlighted Manchester
+  // and move the coordinates there on the way to erasing the name.
+  await dispatch(clearButton, "pointerdown", { pointerType: "mouse" });
+  await dispatch(input, "blur");
+  await dispatch(clearButton, "click");
+
+  assert.deepEqual(selections, [], "no city reached the shell, so the position did not move");
+  assert.equal(input.value, "");
+  assert.equal(field.value(), null);
+  assert.equal(list.hidden, true);
+  assert.equal(clears.length, 1);
+});
+
+test("a press dragged off the clear button does not stop the next blur committing", async () => {
+  const { input, clearButton, selections } = buildCityField();
+  await typeCity(input, "manch");
+  await dispatch(clearButton, "pointerdown", { pointerType: "mouse" });
+  await dispatch(input, "blur");
+  // Released somewhere else: no click. Back in the box, typing and leaving
+  // must commit again as usual.
+  await dispatch(input, "focus");
+  await typeCity(input, "manch");
+  await dispatch(input, "blur");
+  assert.equal(selections.length, 1);
+});
+
 test("a lookup that finds nothing says so instead of leaving a stale list", async () => {
   const { input, list, note } = buildCityField({ results: [] });
   await typeCity(input, "zzzz");
@@ -995,7 +1067,7 @@ test("a slow lookup superseded by a later keystroke never reaches the list", asy
     search: (query) => new Promise((resolve) => pending.push({ query, resolve })),
     onSelect: () => {},
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, list] = wrapper.children;
 
   await typeCity(input, "man");
@@ -1040,7 +1112,7 @@ test("a failed lookup is not cached, so the next keystroke retries", async () =>
     },
     onSelect: () => {},
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, list] = wrapper.children;
 
   await typeCity(input, "manch");
@@ -1149,7 +1221,7 @@ test("a failed lookup reaches the shell whole, not just as a one-line note", asy
     onError: (error) => reported.push(error),
     onSelect: () => {},
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, , note] = wrapper.children;
   await typeCity(input, "manch");
 
@@ -1172,7 +1244,7 @@ test("a list answering an older prefix is not committed by moving on", async () 
     search: (query) => new Promise((resolve) => pending.push({ query, resolve })),
     onSelect: (city) => selections.push(city),
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, list] = wrapper.children;
 
   input.value = "lond";
@@ -1198,7 +1270,7 @@ test("leaving the field abandons a lookup that has not answered yet", async () =
     search: (query) => new Promise((resolve) => pending.push({ query, resolve })),
     onSelect: () => {},
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, list] = wrapper.children;
 
   input.value = "manch";
@@ -1386,7 +1458,7 @@ test("a new lookup clears the previous one's verdict", async () => {
     },
     onSelect: () => {},
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, , note] = wrapper.children;
 
   await typeCity(input, "zzzz");
@@ -1431,7 +1503,7 @@ test("picking one city by mouse does not strand the next one", async () => {
     search: async (query) => byQuery[query] || [],
     onSelect: (city) => selections.push(city),
   });
-  const [, wrapper] = field.nodes;
+  const [wrapper] = field.nodes[1].children;
   const [input, list] = wrapper.children;
 
   // The reported sequence: click London, type Manchester, press Tab.

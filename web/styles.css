@@ -1959,12 +1959,12 @@ button:disabled {
    (web/js/ui/query-fields.ts). Two equal tracks rather than auto: the boxes
    hold the same kind of value and their placeholders are near enough the same
    length, so an uneven split would only read as one of them mattering more.
-   minmax(0, 1fr) for the reason .modal-grid gives -- a bare fr track floors at
+   The trailing auto track is the pair's erase button. minmax(0, 1fr) for the reason .modal-grid gives -- a bare fr track floors at
    the content's min-content width, and a number input's is wide enough to push
    the pair past the column. */
 .modal-coord-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
   gap: 0.4rem;
   align-items: center;
 }
@@ -1981,6 +1981,16 @@ button:disabled {
    Longitude and the map down the card mid-type. */
 .modal-city-field {
   position: relative;
+}
+
+/* The Place name box and its erase button. Aligned to the top, so the "No
+   matching places" note growing under the box does not pull the button down
+   off the input it belongs to. */
+.modal-city-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: start;
 }
 
 .modal-city-suggestions {
