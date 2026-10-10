@@ -102,14 +102,34 @@ export const IGNORED_CHIRP_ERRORS = Object.freeze([
   "RadioFixedBanks",
 ]);
 
+// What fetch() rejects with when the request never got a response -- the tab
+// went offline, a CDN was blocked, a proxy dropped the connection -- in
+// Chromium, Firefox and Safari respectively. The SDK's fetch instrumentation
+// appends the request's host in parentheses ("Failed to fetch (webchirp.org)"),
+// so that suffix is allowed. The match is whole-message on purpose: Chromium's
+// "Failed to fetch dynamically imported module" is a missing deploy chunk as
+// often as a dropped network, and stays reported.
+const NETWORK_FAILURE_MESSAGE =
+  /^(?:Failed to fetch|NetworkError when attempting to fetch resource\.|Load failed)(?: \([^()]*\))?$/;
+
+// Whether a failure is fetch() reporting that the network let it down. Nothing
+// in this app can act on that: the user's connection is not a bug, and the
+// offline cache (web/js/offline-cache.ts) already covers what can be covered.
+// An HTTP error status is not one of these -- fetchOk() in python-sources.ts
+// throws a plain Error naming the status, which is a deploy problem and stays
+// reported. Gated on TypeError, which is the only thing fetch() rejects with
+// for a network failure, so an Error that merely quotes the sentence is kept.
+export function isNetworkFailure(error: unknown): boolean {
+  return error instanceof TypeError && NETWORK_FAILURE_MESSAGE.test(error.message);
+}
+
 // Whether a failure is one this app never reports: a browser without the serial
 // API, a port native Web Serial would not open, a USB interface another driver
-// holds (all three named in web/js/serial-errors.ts), the runtime's own "you
-// have not done X yet" guard, or a CHIRP error from the list above. None is a
-// bug in this app or in CHIRP. Read off the RuntimeCallError the
-// app, and CHIRP, working as designed. Read off the RuntimeCallError the
-// dispatcher throws (web/js/runtime-errors.ts), which beforeSend receives as
-// the hint's originalException -- for a capture from the one funnel and for an
+// holds (all three named in web/js/serial-errors.ts), the network failing a
+// fetch, the runtime's own "you have not done X yet" guard, or a CHIRP error
+// from the list above. None is a bug in this app or in CHIRP. Read off the
+// RuntimeCallError the dispatcher throws (web/js/runtime-errors.ts), which
+// beforeSend receives as the hint's originalException -- for a capture from the one funnel and for an
 // unhandled rejection through the SDK's global handlers alike.
 //
 // RuntimePreconditionError (web/python/webchirp_bridge/runtime_errors.py) is
@@ -132,8 +152,13 @@ export const IGNORED_CHIRP_ERRORS = Object.freeze([
 // clones fail on this model" stays a question a dashboard can answer even for
 // the classes filtered here. The debug panel still prints the whole traceback.
 export function isIgnoredError(error: unknown): boolean {
-  if (isSerialUnsupported(error) || isSerialPortOpenFailed(error) || isUsbInterfaceBusy(error)
-    || isPythonError(error, "RuntimePreconditionError")) {
+  if (
+    isSerialUnsupported(error)
+    || isSerialPortOpenFailed(error)
+    || isUsbInterfaceBusy(error)
+    || isNetworkFailure(error)
+    || isPythonError(error, "RuntimePreconditionError")
+  ) {
     return true;
   }
   return isRuntimeCallError(error)

@@ -47,12 +47,12 @@ export function markBootstrapFailure(error: unknown): Error {
 // says whether this failure has been reported at all, now or earlier, so the
 // caller can stop the action-level funnel capturing the same crash twice.
 /**
- * @param reportCrash Told the failure's detail once.
+ * @param reportCrash Told the failure's detail, and the failure itself, once.
  * @returns 
  *   Whether the error is a bootstrap failure (and so has been reported).
  */
 export function createBootstrapCrashReporter(
-  reportCrash: (detail: string) => void,
+  reportCrash: (detail: string, error: unknown) => void,
 ): (error: unknown, detail: string) => boolean {
   if (typeof reportCrash !== "function") {
     throw new Error("createBootstrapCrashReporter requires a reportCrash() function");
@@ -68,7 +68,7 @@ export function createBootstrapCrashReporter(
       return true;
     }
     lastReported = error;
-    reportCrash(detail);
+    reportCrash(detail, error);
     return true;
   };
 }

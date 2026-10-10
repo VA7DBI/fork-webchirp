@@ -75,7 +75,7 @@ export interface RuntimeRpcClientOptions {
   handleSerialRpc: SerialRpcHandler;
   logDebug?: (message: string, options?: {isError?: boolean}) => void;
   onProgress?: (label: string, total: number) => {update(done: number): void, end(): void};
-  onRuntimeCrash?: (message: string) => void;
+  onRuntimeCrash?: (message: string, error: unknown) => void;
 }
 
 /** A setting's place in the settings tree: the ids from the root down. */

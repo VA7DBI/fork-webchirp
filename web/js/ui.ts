@@ -32,7 +32,7 @@ import {
   trackEvent,
 } from "./ui/analytics.ts";
 import { FLOWS, OUTCOMES, recordFlow } from "./ui/metrics.ts";
-import { captureError, setContextProvider } from "./sentry.ts";
+import { captureError, isIgnoredError, setContextProvider } from "./sentry.ts";
 import type { RuntimeApi } from "./runtime-rpc.ts";
 import type { UiActions, UiContext } from "./types/ui-context.js";
 
@@ -353,10 +353,15 @@ export function createUiController() {
     // The Pyodide worker died rather than returned an error. Reported directly
     // instead of through reportActionError because there is no action to name:
     // the runtime took whatever was in flight down with it, and the message is
-    // all that survives.
-    onRuntimeCrash(message: string) {
+    // all that survives. The capture is a string, so beforeSend never sees the
+    // failure's type; the filter is asked here instead, against the error
+    // itself -- otherwise a dropped connection while fetching the runtime
+    // reaches Sentry as a crash. The debug line and the metric stay either way.
+    onRuntimeCrash(message: string, error: unknown) {
       log.logError(`RUNTIME CRASH ${message}`);
-      captureError(message, { action: "Runtime", tags: { error_kind: "runtime_crash" } });
+      if (!isIgnoredError(error)) {
+        captureError(message, { action: "Runtime", tags: { error_kind: "runtime_crash" } });
+      }
       recordFlow(FLOWS.RUNTIME, OUTCOMES.CRASHED, { error_kind: "runtime_crash" });
     },
   };
