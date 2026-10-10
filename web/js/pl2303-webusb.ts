@@ -9,9 +9,19 @@
 // deliberate divergences from those ports, matching the kernel instead:
 // vendor writes use bmRequestType vendor|device (not class), and vendor reads
 // use bRequest 0x01 on non-HXN chips (0x81 is HXN-only).
-import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 export const PROLIFIC_VENDOR_ID = 0x067b;
@@ -68,6 +78,18 @@ const SUPPORTED_BAUD_RATES = [
   921600, 1228800, 2457600, 3000000, 6000000,
 ];
 
+// The 7-byte CDC-style line coding block for a rate and frame, laid out as the
+// kernel's pl2303_set_termios() writes it: LE32 baud, then stop bits (0 = 1,
+// 2 = 2), parity (0 none, 1 odd, 2 even) and the data bit count.
+export function pl2303LineCoding(baudRate: number, { dataBits, parity, stopBits }: ChipFraming): DataView<ArrayBuffer> {
+  const coding = new DataView(new ArrayBuffer(7));
+  coding.setUint32(0, pickPl2303BaudRate(baudRate), true);
+  coding.setUint8(4, stopBits === 2 ? 2 : 0);
+  coding.setUint8(5, parity === "odd" ? 1 : parity === "even" ? 2 : 0);
+  coding.setUint8(6, dataBits);
+  return coding;
+}
+
 export function isProlificDevice(device: Partial<USBDevice> | null | undefined): boolean {
   return !!device && Number(device.vendorId) === PROLIFIC_VENDOR_ID;
 }
@@ -120,12 +142,6 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
   _controlLines: number;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: the line-coding block is written 8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -145,6 +161,12 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
   // replaces it with what the descriptor actually reports.
   get packetSize() {
     return this._inPacketSize;
+  }
+
+  // open() programs dataBits/stopBits/parity in the line coding block, on
+  // every chip generation, so a framing change is a reopen like a rate change.
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return WEBUSB_FRAMING_CHIP_CAPABILITIES;
   }
 
   _isHxn() {
@@ -274,8 +296,8 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
   }
 
-  // CDC-style line coding: LE32 baud, 1 stop bit, no parity, 8 data bits.
-  async _setLineCoding(baudRate: number): Promise<void> {
+  // CDC-style line coding: the rate and the frame (pl2303LineCoding).
+  async _setLineCoding(baudRate: number, framing: ChipFraming): Promise<void> {
     // Read current coding first, as every known driver does before setting.
     await this.device.controlTransferIn({
       requestType: "class",
@@ -284,16 +306,15 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
       value: 0,
       index: this._interfaceNumber,
     }, 7);
-    const coding = new DataView(new ArrayBuffer(7));
-    coding.setUint32(0, pickPl2303BaudRate(baudRate), true);
-    coding.setUint8(4, 0); // 1 stop bit
-    coding.setUint8(5, 0); // no parity
-    coding.setUint8(6, 8); // 8 data bits
+    const coding = pl2303LineCoding(baudRate, framing);
     await this._classInterfaceOut(SET_LINE_REQUEST, 0, coding.buffer);
   }
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame this chip cannot carry
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "PL2303");
     // close() latches _closed and the read loop exits as soon as it is set;
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
@@ -343,7 +364,7 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
     await this._purgeBuffers();
     await this._setFlowControlNone();
-    await this._setLineCoding(baudRate);
+    await this._setLineCoding(baudRate, framing);
 
     this._setupStreams();
     this._watchDisconnect();
