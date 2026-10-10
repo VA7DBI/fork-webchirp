@@ -21,6 +21,25 @@ export const PORT_SELECTION_CANCELLED = "PortSelectionCancelledError";
 // A capability limit stays recognizable after Pyodide flattens the exception.
 export const SERIAL_UNSUPPORTED = "SerialUnsupportedError";
 
+// Native Web Serial refused to open the port: another program holds it, or the
+// OS driver failed. The browser reports it as a NetworkError, the same name it
+// gives a port lost mid-clone, so the open failure gets a name of its own --
+// reporting drops this one (isIgnoredError, web/js/sentry.ts) and keeps that one.
+export const SERIAL_PORT_OPEN_FAILED = "SerialPortOpenFailedError";
+
+// Rename the browser's open failure, keeping its message for the debug panel.
+export function createSerialPortOpenFailedError(message: string): Error {
+  const error = new Error(message);
+  error.name = SERIAL_PORT_OPEN_FAILED;
+  return error;
+}
+
+// Recognize that outcome by name, in JS or after crossing Python (jsErrorName
+// reads a RuntimeCallError's jsCause).
+export function isSerialPortOpenFailed(error: unknown): boolean {
+  return jsErrorName(error) === SERIAL_PORT_OPEN_FAILED;
+}
+
 // Another driver holds the cable's USB interface -- Android's own kernel
 // driver, most often -- so WebUSB cannot claim it. Named for the same reason
 // as SERIAL_UNSUPPORTED: the cause is on the user's machine, and reporting
@@ -42,7 +61,7 @@ export function isUsbInterfaceBusy(error: unknown): boolean {
 
 // The named transport failures a wrapper must not erase: reporting recognizes
 // them by name alone, so a plain Error around one would be reported after all.
-const PRESERVED_TRANSPORT_FAILURES: readonly string[] = [USB_INTERFACE_BUSY];
+const PRESERVED_TRANSPORT_FAILURES: readonly string[] = [USB_INTERFACE_BUSY, SERIAL_PORT_OPEN_FAILED];
 
 // Wrap a transport failure in a sentence of the caller's, keeping the failure
 // as the cause and, when it is one of the names above, its name too -- the
