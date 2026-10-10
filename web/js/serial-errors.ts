@@ -61,7 +61,7 @@ export function isUsbInterfaceBusy(error: unknown): boolean {
 
 // The named transport failures a wrapper must not erase: reporting recognizes
 // them by name alone, so a plain Error around one would be reported after all.
-const PRESERVED_TRANSPORT_FAILURES: readonly string[] = [USB_INTERFACE_BUSY];
+const PRESERVED_TRANSPORT_FAILURES: readonly string[] = [USB_INTERFACE_BUSY, SERIAL_PORT_OPEN_FAILED];
 
 // Wrap a transport failure in a sentence of the caller's, keeping the failure
 // as the cause and, when it is one of the names above, its name too -- the

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BrowserSerialBridge } from "../../web/js/serial.ts";
-import { USB_INTERFACE_BUSY, createUsbInterfaceBusyError } from "../../web/js/serial-errors.ts";
+import {
+  SERIAL_PORT_OPEN_FAILED,
+  USB_INTERFACE_BUSY,
+  createSerialPortOpenFailedError,
+  createUsbInterfaceBusyError,
+} from "../../web/js/serial-errors.ts";
 import { createSerialRpcHandler } from "../../web/js/serial-globals.ts";
 import { makeEmitter, makeRecordingPort } from "../support/fake-serial.mjs";
 import { tick, withNavigator } from "../support/globals.mjs";
@@ -141,28 +146,33 @@ test("a reopen that cannot be undone leaves no zombie port behind", async (t) =>
   assert.equal(bridge.getPortInfo().connected, false);
 });
 
-// Reporting drops a busy USB interface by its name alone, so the bridge's own
-// sentence around a failed reopen must keep that name, on both reopen paths.
-test("a reopen refused because the interface is busy keeps the failure's name", async (t) => {
-  const busy = () => createUsbInterfaceBusyError("PL2303: could not claim USB interface 0");
-  const reconfiguring = await openBridge(t, {
-    failOpenWhen: (options, attempt) => (attempt === 0 ? null : busy()),
-  });
-  await assert.rejects(() => reconfiguring.bridge.reconfigure({ baudRate: 57600 }), (error) => {
-    assert.equal(error.name, USB_INTERFACE_BUSY);
-    assert.match(error.message, /Could not reconfigure the port \(baudRate\): PL2303/);
-    return true;
-  });
+// Reporting drops a busy USB interface and a native port that would not open by
+// name alone, so the bridge's own sentence around a failed reopen must keep
+// that name, on both reopen paths.
+for (const [name, create] of [
+  [USB_INTERFACE_BUSY, () => createUsbInterfaceBusyError("PL2303: could not claim USB interface 0")],
+  [SERIAL_PORT_OPEN_FAILED, () => createSerialPortOpenFailedError("Failed to open serial port.")],
+]) {
+  test(`a reopen refused with ${name} keeps the failure's name`, async (t) => {
+    const reconfiguring = await openBridge(t, {
+      failOpenWhen: (options, attempt) => (attempt === 0 ? null : create()),
+    });
+    await assert.rejects(() => reconfiguring.bridge.reconfigure({ baudRate: 57600 }), (error) => {
+      assert.equal(error.name, name);
+      assert.match(error.message, /^Could not reconfigure the port \(baudRate\): /);
+      return true;
+    });
 
-  const rerating = await openBridge(t, {
-    failOpenWhen: (options, attempt) => (attempt === 0 ? null : busy()),
+    const rerating = await openBridge(t, {
+      failOpenWhen: (options, attempt) => (attempt === 0 ? null : create()),
+    });
+    await assert.rejects(() => rerating.bridge.applyBaudRate(57600), (error) => {
+      assert.equal(error.name, name);
+      assert.match(error.message, /^Could not reopen the serial port at 57600 baud: /);
+      return true;
+    });
   });
-  await assert.rejects(() => rerating.bridge.applyBaudRate(57600), (error) => {
-    assert.equal(error.name, USB_INTERFACE_BUSY);
-    assert.match(error.message, /Could not reopen the serial port at 57600 baud: PL2303/);
-    return true;
-  });
-});
+}
 
 test("any other reopen failure stays a plain Error", async (t) => {
   const { bridge } = await openBridge(t, {
