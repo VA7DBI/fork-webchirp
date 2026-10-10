@@ -397,8 +397,9 @@ test("each transport declares the capabilities its adapter has", async () => {
     await port.close();
   }
   const chip = { transport: "webusb", framing: false, signals: true, reconfigure: "reopen" };
+  const framingChip = { ...chip, framing: true };
   assert.deepEqual(declared, {
-    ftdi: chip,
+    ftdi: framingChip,
     pl2303: chip,
     ch340: chip,
     cp2102: chip,

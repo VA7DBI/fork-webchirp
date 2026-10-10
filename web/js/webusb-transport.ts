@@ -11,6 +11,7 @@ import { createDisconnectNotifier, watchUsbDisconnect } from "./serial-transport
 import type {
   DisconnectNotifier,
   SerialDisconnectPayload,
+  SerialOpenOptions,
   SerialTransport,
   SerialTransportCapabilities,
 } from "./serial-transport.ts";
@@ -24,15 +25,60 @@ export interface WebUsbTransportOptions {
   usb?: EventTarget | null;
 }
 
-// What the chip drivers can do. They program 8N1 whatever open() asks for
-// (none of them reads dataBits/stopBits/parity), so a framing change has to be
-// refused rather than reopened and reported as done; a rate change goes
-// through close() and open() like Web Serial's; DTR/RTS reach the chip.
+// What a chip driver that can only program 8N1 can do: a framing change has
+// to be refused rather than reopened and reported as done; a rate change goes
+// through close() and open() like Web Serial's; DTR/RTS reach the chip. The
+// default for a WebUSB port, so a driver claims framing only by overriding
+// capabilities once it programs open()'s dataBits/stopBits/parity.
 export const WEBUSB_CHIP_CAPABILITIES: Readonly<SerialTransportCapabilities> = Object.freeze({
   framing: false,
   signals: true,
   reconfigure: "reopen",
 });
+
+// What a chip driver that programs the frame open() asks for can do: the
+// same, plus framing.
+export const WEBUSB_FRAMING_CHIP_CAPABILITIES: Readonly<SerialTransportCapabilities> = Object.freeze({
+  ...WEBUSB_CHIP_CAPABILITIES,
+  framing: true,
+});
+
+/** The character frame a chip driver is asked to program, checked and defaulted. */
+export interface ChipFraming {
+  dataBits: 7 | 8;
+  stopBits: 1 | 2;
+  parity: "none" | "even" | "odd";
+}
+
+// open()'s dataBits, stopBits and parity, each defaulted the way Web Serial
+// defaults it (8, 1, "none") and checked against what the contract can ask
+// for. Every chip encodes its frame from this, so a value outside the
+// contract (5 data bits, mark parity, 1.5 stop bits) is refused by name here
+// rather than encoded as something else: a misframed line corrupts every
+// byte and the clone that fails on it names nothing.
+/**
+ * @param chip The prefix the errors carry ("CH340").
+ */
+export function resolveChipFraming(options: Partial<SerialOpenOptions>, chip: string): ChipFraming {
+  const dataBits = Number(options.dataBits ?? 8);
+  const stopBits = Number(options.stopBits ?? 1);
+  const parity = String(options.parity ?? "none");
+  if (dataBits !== 7 && dataBits !== 8) {
+    throw new Error(`${chip}: cannot program ${options.dataBits} data bits (7 or 8 only)`);
+  }
+  if (stopBits !== 1 && stopBits !== 2) {
+    throw new Error(`${chip}: cannot program ${options.stopBits} stop bits (1 or 2 only)`);
+  }
+  if (parity !== "none" && parity !== "even" && parity !== "odd") {
+    throw new Error(`${chip}: cannot program parity "${options.parity}" (none, even or odd only)`);
+  }
+  return { dataBits, stopBits, parity };
+}
+
+// The frame's conventional short name ("8E1"), for error messages.
+export function framingLabel({ dataBits, parity, stopBits }: ChipFraming): string {
+  return `${dataBits}${parity[0].toUpperCase()}${stopBits}`;
+}
 
 // Write one chunk to a chip's bulk OUT endpoint: every byte of it, or an
 // error. Shared by the four chip drivers' writable streams, because a bulk OUT
@@ -120,8 +166,9 @@ export class WebUsbTransport {
     return "webusb";
   }
 
-  // The chip default; the CDC wrapper overrides it because the polyfill does
-  // honour framing.
+  // The conservative default (8N1 only). A chip driver that programs the
+  // frame overrides it, and so does the CDC wrapper, because the polyfill
+  // sends the frame in SET_LINE_CODING.
   get capabilities(): Readonly<SerialTransportCapabilities> {
     return WEBUSB_CHIP_CAPABILITIES;
   }

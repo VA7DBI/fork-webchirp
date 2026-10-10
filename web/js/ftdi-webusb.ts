@@ -7,9 +7,19 @@
 // the generic CDC-ACM polyfill cannot drive.
 //
 // Protocol constants and the baud-rate divisor math follow libftdi.
-import { WebUsbTransport, writeBulkOut } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 export const FTDI_VENDOR_ID = 0x0403;
@@ -46,11 +56,27 @@ const LATENCY_TIMER_MS = 4;
 // boundary and the event loop, hence the deeper queue.
 const READ_PIPELINE_DEPTH = 16;
 
-// 8 data bits, no parity, 1 stop bit.
-const DATA_8N1 = 0x0008;
+// SIO_SET_DATA wValue, as the kernel's ftdi_sio.h lays it out: the data bit
+// count in the low byte, parity in bits 8-10, stop bits in bits 11-12 (bit 14
+// is break, never set here).
+const DATA_PARITY_NONE = 0x0 << 8;
+const DATA_PARITY_ODD = 0x1 << 8;
+const DATA_PARITY_EVEN = 0x2 << 8;
+const DATA_STOP_BITS_1 = 0x0 << 11;
+const DATA_STOP_BITS_2 = 0x2 << 11;
 
 // Control requests other than baud target port/interface A (libftdi index 1).
 const PORT_INDEX = 1;
+
+// The SIO_SET_DATA wValue for a frame, encoded as the kernel's
+// ftdi_set_termios() does: 8N1 is 0x0008, 8E1 0x0208, 7E1 0x0207, 8N2 0x1008.
+export function ftdiDataValue({ dataBits, parity, stopBits }: ChipFraming): number {
+  const parityBits = parity === "odd"
+    ? DATA_PARITY_ODD
+    : parity === "even" ? DATA_PARITY_EVEN : DATA_PARITY_NONE;
+  const stopBitsValue = stopBits === 2 ? DATA_STOP_BITS_2 : DATA_STOP_BITS_1;
+  return dataBits | parityBits | stopBitsValue;
+}
 
 export function isFtdiDevice(device: Partial<USBDevice> | null | undefined): boolean {
   return !!device && Number(device.vendorId) === FTDI_VENDOR_ID;
@@ -112,12 +138,6 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
   _inPacketSize: number;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: SIO_SET_DATA is issued as DATA_8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -137,6 +157,12 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     return this._inPacketSize;
   }
 
+  // open() programs dataBits/stopBits/parity through SIO_SET_DATA, so a
+  // framing change is a reopen like a rate change.
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return WEBUSB_FRAMING_CHIP_CAPABILITIES;
+  }
+
   async _controlOut(request: number, value: number, index: number): Promise<void> {
     const result = await this.device.controlTransferOut({
       requestType: "vendor",
@@ -152,6 +178,9 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame this chip cannot carry
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "FTDI");
     // close() latches _closed, and the read loop below exits the moment it is
     // set. Reopening the same port object without clearing it yields streams
     // that never deliver a byte.
@@ -194,7 +223,7 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     await this._controlOut(SIO_RESET, SIO_RESET_PURGE_TX, PORT_INDEX);
     const baud = ftdiConvertBaudrate(baudRate);
     await this._controlOut(SIO_SET_BAUD_RATE, baud.value, baud.index);
-    await this._controlOut(SIO_SET_DATA, DATA_8N1, PORT_INDEX);
+    await this._controlOut(SIO_SET_DATA, ftdiDataValue(framing), PORT_INDEX);
     await this._controlOut(SIO_SET_FLOW_CTRL, 0x0000, PORT_INDEX);
     await this._controlOut(SIO_SET_LATENCY_TIMER, LATENCY_TIMER_MS, PORT_INDEX);
 
