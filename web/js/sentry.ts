@@ -18,6 +18,7 @@
 // below. tests/channels/sentry.mjs fails the build if the two drift apart.
 
 import { SENTRY_SDK_URL, SENTRY_SDK_VERSION } from "./cdn-urls.ts";
+import { isServerOutage } from "./http-errors.ts";
 import { isPythonError, isRuntimeCallError } from "./runtime-errors.ts";
 import { isSerialPortOpenFailed, isSerialUnsupported, isUsbInterfaceBusy } from "./serial-errors.ts";
 import type { BrowserOptions } from "@sentry/browser";
@@ -67,12 +68,16 @@ export const SENTRY_HOSTS = Object.freeze([
   "webchirp.org",
 ]);
 
-// Browser noise that is never actionable: a benign layout notification. It is
-// raised outside this app's code, so nothing here can name it, and it stays a
-// message pattern for the SDK's own ignoreErrors filter. Everything this app
-// raises is filtered by name or type instead (isIgnoredError below).
+// Browser noise that is never actionable: a benign layout notification, and a
+// browser extension's messaging call failing inside the page (Safari and
+// Firefox word it this way; the event carries no extension frame for
+// denyUrls to match, WEBCHIRP-FRONTEND-K). Both are raised outside this app's
+// code, so nothing here can name them, and they stay message patterns for the
+// SDK's own ignoreErrors filter. Everything this app raises is filtered by
+// name or type instead (isIgnoredError below).
 const IGNORE_ERRORS = Object.freeze([
   /ResizeObserver loop/i,
+  /Invalid call to runtime\.sendMessage\(\)/,
 ]);
 
 // The CHIRP errors that describe the user's file, the user's radio or the
@@ -115,10 +120,11 @@ const NETWORK_FAILURE_MESSAGE =
 // Whether a failure is fetch() reporting that the network let it down. Nothing
 // in this app can act on that: the user's connection is not a bug, and the
 // offline cache (web/js/offline-cache.ts) already covers what can be covered.
-// An HTTP error status is not one of these -- fetchOk() in python-sources.ts
-// throws a plain Error naming the status, which is a deploy problem and stays
-// reported. Gated on TypeError, which is the only thing fetch() rejects with
-// for a network failure, so an Error that merely quotes the sentence is kept.
+// An HTTP error status is not one of these: fetchOk() in python-sources.ts
+// throws for it through createHttpStatusError (web/js/http-errors.ts), and
+// isIgnoredError drops only the outage statuses that names. Gated on
+// TypeError, which is the only thing fetch() rejects with for a network
+// failure, so an Error that merely quotes the sentence is kept.
 export function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError && NETWORK_FAILURE_MESSAGE.test(error.message);
 }
@@ -126,7 +132,8 @@ export function isNetworkFailure(error: unknown): boolean {
 // Whether a failure is one this app never reports: a browser without the serial
 // API, a port native Web Serial would not open, a USB interface another driver
 // holds (all three named in web/js/serial-errors.ts), the network failing a
-// fetch, the runtime's own "you have not done X yet" guard, or a CHIRP error
+// fetch, the host answering with an outage status (web/js/http-errors.ts),
+// the runtime's own "you have not done X yet" guard, or a CHIRP error
 // from the list above. None is a bug in this app or in CHIRP. Read off the
 // RuntimeCallError the dispatcher throws (web/js/runtime-errors.ts), which
 // beforeSend receives as the hint's originalException -- for a capture from the one funnel and for an
@@ -146,6 +153,18 @@ export function isNetworkFailure(error: unknown): boolean {
 // while an exact match leaves them -- defined in
 // webchirp_bridge.runtime_errors -- reported as before.
 //
+// The rule is applied to the failure and to the exception it was raised from,
+// because a wrapper describes the same circumstance as what it wraps.
+// load_image_base64 re-raises chirp.errors.ImageDetectFailed ("Unknown file
+// format": the user dropped something that is not a radio image) as
+// ImageDetectionError, which the all-drivers retry needs by that name -- so
+// judged by its own class the user's file reached Sentry as a bug. Only the
+// nearest cause counts, and only an explicit one (raise ... from): what that
+// exception was itself raised from was already the wrapper's author's to
+// judge, and a failure Python merely recorded as raised while handling an
+// ignored one -- ga510 reading the port inside its RadioNoResponse handler --
+// is a defect of its own.
+//
 // Dropping the events does not drop the signal. This filters events only,
 // while the failure metrics in web/js/ui/metrics.ts carry error_kind,
 // error_type and the driver out through beforeSendMetric -- so "what share of
@@ -157,19 +176,35 @@ export function isIgnoredError(error: unknown): boolean {
     || isSerialPortOpenFailed(error)
     || isUsbInterfaceBusy(error)
     || isNetworkFailure(error)
+    || isServerOutage(error)
     || isPythonError(error, "RuntimePreconditionError")
   ) {
     return true;
   }
-  return isRuntimeCallError(error)
-    && error.pythonModule === "chirp.errors"
-    && IGNORED_CHIRP_ERRORS.includes(error.pythonType);
+  if (!isRuntimeCallError(error)) {
+    return false;
+  }
+  const cause = error.pythonCauses[0];
+  return isIgnoredChirpClass(error.pythonType, error.pythonModule)
+    || (cause !== undefined && cause.explicit && isIgnoredChirpClass(cause.type, cause.module));
 }
 
+// Whether a Python class, named by class and defining module, is one of the
+// IGNORED_CHIRP_ERRORS. Split out because isIgnoredError asks it twice: of the
+// failure, and of the exception the failure was raised from.
+function isIgnoredChirpClass(type: string, module: string): boolean {
+  return module === "chirp.errors" && IGNORED_CHIRP_ERRORS.includes(type);
+}
+
+// Script origins that are never this app: browser extensions, and the script
+// Facebook's and Instagram's in-app browser on Android injects into every page
+// it shows (iabjs://, whose "Java object is gone" outlives the app's own
+// WebView bridge -- WEBCHIRP-FRONTEND-4).
 const DENY_URLS = Object.freeze([
   /^chrome-extension:\/\//i,
   /^moz-extension:\/\//i,
   /^safari-(?:web-)?extension:\/\//i,
+  /^iabjs:\/\//i,
 ]);
 
 // Everything a user owns that could otherwise ride along inside an error

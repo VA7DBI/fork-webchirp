@@ -163,7 +163,7 @@ def _js_cause(exc: BaseException) -> dict[str, str] | None:
     return None
 
 
-def _python_causes(exc: BaseException) -> list[dict[str, str]]:
+def _python_causes(exc: BaseException) -> list[dict[str, str | bool]]:
     """Name each exception ``exc`` was raised from or while handling.
 
     A driver often catches a specific failure and re-raises a generic one --
@@ -172,10 +172,26 @@ def _python_causes(exc: BaseException) -> list[dict[str, str]]:
     classifies a failure by what it said (``classifyErrorKind``,
     ``web/js/ui/analytics.ts``), and these messages are part of what it said;
     the traceback's frames, which are not, stay out.
+
+    ``module`` and ``explicit`` are there for reporting: ``isIgnoredError``
+    (``web/js/sentry.ts``) judges a wrapper by the CHIRP class it was raised
+    from, and a CHIRP class is named by class and defining module together.
+    ``explicit`` says the entry is the one above it's ``__cause__`` -- a
+    ``raise ... from`` that translates one failure into another -- rather than
+    a ``__context__`` Python recorded because the one above was raised while
+    handling it. Only the first kind says the two are the same circumstance:
+    ``ga510.detect_from_serial`` reads the port inside its ``RadioNoResponse``
+    handler, and a serial failure there is a defect of its own.
     """
+    chain = _exception_chain(exc)
     return [
-        {"type": type(current).__name__, "message": str(current)}
-        for current in _exception_chain(exc)[1:]
+        {
+            "type": type(current).__name__,
+            "module": type(current).__module__,
+            "message": str(current),
+            "explicit": above.__cause__ is current,
+        }
+        for above, current in zip(chain, chain[1:])
     ]
 
 
