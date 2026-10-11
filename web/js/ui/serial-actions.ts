@@ -462,7 +462,18 @@ export function createSerialActions(ctx: UiContext) {
     const result = rowResult;
     const settingsValidation = settingsResult
       || { valid: true, issues: [], settings: ctx.settings.getGroups() };
-    ctx.settings.setGroups(settingsValidation.settings);
+    // An unavailable reply says the runtime could not read settings, not that
+    // the radio has none: keep the panel's tree, and say why in Debug Output.
+    if (settingsResult && settingsResult.available === false) {
+      if (ctx.settings.getGroups().length > 0) {
+        log.logDebug(
+          `PREFLIGHT settings unavailable: ${settingsResult.message || "no reason given"}`
+            + (settingsResult.error ? ` (${settingsResult.error})` : ""),
+        );
+      }
+    } else {
+      ctx.settings.setGroups(settingsValidation.settings);
+    }
     ctx.settings.ensureActiveTab();
     ctx.settings.clearInvalid();
     ctx.settings.applyValidationIssues(settingsValidation.issues);
