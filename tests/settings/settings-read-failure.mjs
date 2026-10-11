@@ -37,6 +37,22 @@ _cls.get_settings = _broken_get_settings
     const exported = await harness.exportCodeplugBinary(module, className, loaded.rows, []);
     assert.ok(exported.image.length > 0, "a binary export should still produce an image");
     assert.deepEqual(exported.settings, []);
+
+    // Settings the user did submit are another matter: with no tree to apply
+    // them to, the preflight must block the upload instead of letting it
+    // through as channels only.
+    const sessionId = loaded.sessionId;
+    const withEdits = await harness.rpc("validate_radio_settings", {
+      session_id: sessionId,
+      settings_groups: baseline.loaded.settings,
+    });
+    assert.equal(withEdits.valid, false, "submitted settings that cannot be checked block");
+    assert.equal(withEdits.available, false);
+    const without = await harness.rpc("validate_radio_settings", {
+      session_id: sessionId,
+      settings_groups: [],
+    });
+    assert.equal(without.valid, true, "no submitted settings, nothing to block on");
   } finally {
     await harness.runPython(
       `

@@ -67,16 +67,19 @@ def _settings_validation_payload(
     requires_image: bool = False,
     message: str = "",
     error_text: str = "",
+    blocking: bool = False,
 ) -> dict[str, Any]:
     """The validate_radio_settings reply.
 
     result is the outcome of _validate_and_apply_radio_settings when the
     settings could be checked; without it the reply says why they could not,
     and reports the payload as valid so an unavailable panel never blocks an
-    upload of channels alone.
+    upload of channels alone. ``blocking`` is the exception: the caller
+    submitted settings that now cannot be checked, and an upload that went
+    ahead would write the channels without them.
     """
     return {
-        "valid": bool(result["valid"]) if result is not None else True,
+        "valid": bool(result["valid"]) if result is not None else not blocking,
         "issues": result["issues"] if result is not None else [],
         "settings": result["settings"] if result is not None else [],
         "available": result is not None,
@@ -535,7 +538,17 @@ def validate_radio_settings(
     try:
         result = _validate_and_apply_radio_settings(radio, settings_groups or [], apply_changes=False)
     except Exception as exc:
+        # Settings the user submitted cannot be written without a tree to apply
+        # them to, so the preflight must stop the upload rather than let it
+        # through as channels only (the upload itself would raise the same way).
+        if settings_groups:
+            _log_debug(
+                "Upload blocked: the submitted radio settings cannot be checked because "
+                "the driver's settings could not be read:\n" + traceback.format_exc()
+            )
         return _settings_validation_payload(
-            message=SETTINGS_NEED_STATE_MESSAGE, error_text=str(exc)
+            message=SETTINGS_NEED_STATE_MESSAGE,
+            error_text=str(exc),
+            blocking=bool(settings_groups),
         )
     return _settings_validation_payload(result)
