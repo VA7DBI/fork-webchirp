@@ -1,5 +1,28 @@
 # Release Notes
 
+## 2026-10-11
+- After one online visit the app loads and boots radio drivers with no network, served whole from a service worker cache, while online visits still get the latest deploy (#230).
+- Channel edits are now checked by the radio's driver as each cell is committed, showing the typed value as pending until the driver answers, instead of only at upload (#224).
+- Baofeng UV-5R Mini and UV-5G Mini downloads and uploads no longer fail before the first byte with `'WebSerialPipe' object has no attribute 'port'` (#235).
+- CSV and `.img` exports in Firefox and Safari are no longer truncated or missing (#242).
+- Editable values of a partly locked radio setting are no longer greyed out (#239).
+- Saving the per-channel Extra editor after selecting another radio is now refused instead of silently dropping the values at upload (#241).
+- The repeater query modal's Place name and Coordinates rows now have erase buttons like the Locator row (#238).
+- The empty channel grid's suggestions are now a styled list (#240).
+- Connect is disabled with an explanation on browsers that have no serial transport, instead of failing with a traceback when clicked (#215).
+- `?drivers=quansheng-unofficial` now also offers F4HWN v6.1.0 (#234).
+- Updated the bundled CHIRP to 7a4123ad: Yaesu FT-4 settings fixes and TYT TH-9000 Plus detection (#229).
+- The browser now runs Pyodide 0.27.7, the release the tests run against, instead of 0.27.2 (#231).
+- Errors and metrics from offline sessions are now kept and sent to Sentry once back online (#232).
+- Network fetch failures, USB interface claim refusals, unopenable serial ports and unsupported serial transports are no longer filed as Sentry bugs, matched by error class rather than message text (#212, #233, #236, #237).
+- Python exception messages now survive into Debug Output and Sentry when the browser's stack omits them (#213).
+- CHIRP archives and runtime assets from earlier deploys are kept for 30 days so long-open tabs can still boot after a release (#214).
+- Python errors now reach JS as a typed envelope classified by exception class instead of matched by traceback text; no user-visible change (#205).
+- All serial ports now satisfy one declared transport contract served by one serial bridge in the browser and Node; no user-visible change (#218).
+- Every repeater directory now normalizes into one `RepeaterRecord` with one row builder; no user-visible change (#225).
+- The browser code and scripts are now TypeScript under strict type checking, and the dist build is bundled by esbuild; no user-visible change (#220, #221, #222, #223).
+- UI tests now run on the real `index.html` in jsdom, a Playwright smoke suite runs against the built site, and Node no longer needs the stack-switching flag; no user-visible change (#226, #227, #228).
+
 ## 2026-10-03
 - BT-1AD Bluetooth programming adapters can now connect through a new Connect via WebBluetooth button, shown on browsers that support WebBluetooth (#210).
 - Every radio's model page now has a researched hardware table (battery, charging, power, bands, modulations, display, APRS/GPS and more) with its sources cited (#202).
