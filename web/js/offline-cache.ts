@@ -29,6 +29,7 @@
 // Older ones are deleted.
 
 import { errorFields } from "./error-details.ts";
+import { isServerOutageStatus } from "./http-errors.ts";
 
 // Every cache this module owns starts with this; the version is bumped when
 // the layout changes, and anything with the prefix but not in use is deleted.
@@ -257,15 +258,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// Whether an HTTP status says the server could not answer just now (a 5xx,
-// a request timeout, rate limiting) rather than giving an answer. A page or
-// renamable file that gets one is served from the cached build as if the
-// network had failed, so an outage at the host does not stop a cached app
-// from launching. Any other status -- a 404 for a file a deploy dropped, say
-// -- is the answer, and the cached copy is not resurrected over it.
-function isServerOutage(status: number): boolean {
-  return status >= 500 || status === 408 || status === 429;
-}
 
 /** What the worker knows about a request beyond the request itself. */
 export interface RespondOptions {
@@ -512,9 +504,12 @@ export function createOfflineCache(env: OfflineEnv): OfflineCache {
   }
 
   // The network's answer within the timeout, or the cached copy under key
-  // when the network fails, times out or reports an outage (isServerOutage);
+  // when the network fails, times out or reports an outage (isServerOutageStatus);
   // with no cached copy, the network's answer however long it takes. Which
-  // one answered goes to record.
+  // one answered goes to record. An outage at the host therefore does not stop
+  // a cached app from launching, while any other status -- a 404 for a file a
+  // deploy dropped, say -- is the answer, and the cached copy is not
+  // resurrected over it.
   async function networkFirst(
     request: Request,
     key: string,
@@ -531,7 +526,7 @@ export function createOfflineCache(env: OfflineEnv): OfflineCache {
     }
     try {
       const response = await withTimeout(network, timeoutMs);
-      if (!isServerOutage(response.status)) {
+      if (!isServerOutageStatus(response.status)) {
         record("network");
         return response;
       }

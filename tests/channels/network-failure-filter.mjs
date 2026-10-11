@@ -4,8 +4,9 @@
 // a dropped connection or a blocked request shows up, and it used to reach
 // Sentry as a runtime crash, once per flaky connection. fetch() rejects with a
 // TypeError for exactly that case, so the rule is keyed on the type and the
-// browser's sentence together, and a status error from fetchOk() (a missing
-// file in a deploy) stays reported.
+// browser's sentence together. A status error from fetchOk() is split by
+// status: an outage at the host (a 5xx, a timeout, rate limiting) is dropped
+// like a dropped connection, a missing file in a deploy (a 404) stays reported.
 //
 // Two paths carry the failure to Sentry, and both are checked: beforeSend sees
 // the TypeError when an action's funnel captures it, and onRuntimeCrash sees it
@@ -18,6 +19,7 @@ import "../support/register-cdn-imports.mjs";
 
 import { initOptions, initSentry, isNetworkFailure, resetSentryForTests } from "../../web/js/sentry.ts";
 import { createBootstrapCrashReporter, markBootstrapFailure } from "../../web/js/runtime-bootstrap.ts";
+import { createHttpStatusError, isServerOutage, SERVER_OUTAGE } from "../../web/js/http-errors.ts";
 import { installIndexPage } from "../support/index-page.mjs";
 
 // Whether beforeSend drops the event Sentry would build for this failure.
@@ -60,7 +62,9 @@ test("each browser's network failure from fetch() is dropped", () => {
 
 test("fetch failures that point at a deploy stay reported", () => {
   const kept = [
-    // fetchOk() in python-sources.ts: the server answered, with an error.
+    // fetchOk() in python-sources.ts: the server answered that the file is
+    // not there.
+    createHttpStatusError("https://webchirp.org/chirp/chirp-abc.zip", 404),
     new Error("Failed to fetch https://webchirp.org/chirp/chirp-abc.zip: 404"),
     // A code-split chunk missing from the deploy, not only a dropped network.
     new TypeError("Failed to fetch dynamically imported module: https://webchirp.org/js/app.X.js"),
@@ -72,6 +76,22 @@ test("fetch failures that point at a deploy stay reported", () => {
     assert.equal(isNetworkFailure(error), false, error.message);
     assert.equal(isDropped(error), false, error.message);
   }
+});
+
+test("an outage status from the host is dropped, by name", () => {
+  // The statuses GitHub Pages answered with in the events that prompted this
+  // rule (502, 503), and the other two that mean "not now" rather than "no".
+  for (const status of [500, 502, 503, 504, 408, 429]) {
+    const error = createHttpStatusError("./python/webchirp_bridge/jsbridge.eaeebeeacc.py", status);
+    assert.equal(error.name, SERVER_OUTAGE, String(status));
+    // The message is what the debug panel prints, so it keeps naming the
+    // file and the status.
+    assert.equal(error.message, `Failed to fetch ./python/webchirp_bridge/jsbridge.eaeebeeacc.py: ${status}`);
+    assert.equal(isServerOutage(error), true, String(status));
+    assert.equal(isDropped(error), true, String(status));
+  }
+  // The sentence alone is not the outage: only the name is.
+  assert.equal(isServerOutage(new Error("Failed to fetch ./x.py: 503")), false);
 });
 
 test("the crash reporter hands the failure itself on with its detail", () => {
@@ -100,6 +120,10 @@ test("a runtime that could not be fetched is logged but not captured", async (t)
   assert.equal(sdk.captured.length, 0);
   // The debug panel still says what happened.
   assert.match(document.querySelector("#debug-output").value, /RUNTIME CRASH TypeError: Failed to fetch/);
+
+  // Nor is a runtime file the host answered with an outage status.
+  ui.onRuntimeCrash("Error: Failed to fetch ./x.py: 503", createHttpStatusError("./x.py", 503));
+  assert.equal(sdk.captured.length, 0);
 
   // Any other bootstrap failure is still a crash worth reading.
   ui.onRuntimeCrash("RuntimeError: seeding failed", new Error("RuntimeError: seeding failed"));

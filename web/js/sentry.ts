@@ -18,6 +18,7 @@
 // below. tests/channels/sentry.mjs fails the build if the two drift apart.
 
 import { SENTRY_SDK_URL, SENTRY_SDK_VERSION } from "./cdn-urls.ts";
+import { isServerOutage } from "./http-errors.ts";
 import { isPythonError, isRuntimeCallError } from "./runtime-errors.ts";
 import { isSerialPortOpenFailed, isSerialUnsupported, isUsbInterfaceBusy } from "./serial-errors.ts";
 import type { BrowserOptions } from "@sentry/browser";
@@ -115,10 +116,11 @@ const NETWORK_FAILURE_MESSAGE =
 // Whether a failure is fetch() reporting that the network let it down. Nothing
 // in this app can act on that: the user's connection is not a bug, and the
 // offline cache (web/js/offline-cache.ts) already covers what can be covered.
-// An HTTP error status is not one of these -- fetchOk() in python-sources.ts
-// throws a plain Error naming the status, which is a deploy problem and stays
-// reported. Gated on TypeError, which is the only thing fetch() rejects with
-// for a network failure, so an Error that merely quotes the sentence is kept.
+// An HTTP error status is not one of these: fetchOk() in python-sources.ts
+// throws for it through createHttpStatusError (web/js/http-errors.ts), and
+// isIgnoredError drops only the outage statuses that names. Gated on
+// TypeError, which is the only thing fetch() rejects with for a network
+// failure, so an Error that merely quotes the sentence is kept.
 export function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError && NETWORK_FAILURE_MESSAGE.test(error.message);
 }
@@ -126,7 +128,8 @@ export function isNetworkFailure(error: unknown): boolean {
 // Whether a failure is one this app never reports: a browser without the serial
 // API, a port native Web Serial would not open, a USB interface another driver
 // holds (all three named in web/js/serial-errors.ts), the network failing a
-// fetch, the runtime's own "you have not done X yet" guard, or a CHIRP error
+// fetch, the host answering with an outage status (web/js/http-errors.ts),
+// the runtime's own "you have not done X yet" guard, or a CHIRP error
 // from the list above. None is a bug in this app or in CHIRP. Read off the
 // RuntimeCallError the dispatcher throws (web/js/runtime-errors.ts), which
 // beforeSend receives as the hint's originalException -- for a capture from the one funnel and for an
@@ -157,6 +160,7 @@ export function isIgnoredError(error: unknown): boolean {
     || isSerialPortOpenFailed(error)
     || isUsbInterfaceBusy(error)
     || isNetworkFailure(error)
+    || isServerOutage(error)
     || isPythonError(error, "RuntimePreconditionError")
   ) {
     return true;

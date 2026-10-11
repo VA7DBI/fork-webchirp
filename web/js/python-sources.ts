@@ -1,4 +1,5 @@
 import type { PyodideInterface } from "pyodide";
+import { createHttpStatusError } from "./http-errors.ts";
 
 // Single source of truth for the CHIRP revision the app runs against. The
 // chirp/ submodule, the committed web/radio-catalog.json and the CHIRP archive
@@ -132,7 +133,7 @@ function assertMethod(obj: object, name: string): void {
 async function fetchOk(url: string): Promise<Response> {
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`Failed to fetch ${url}: ${res.status}`);
+    throw createHttpStatusError(url, res.status);
   }
   return res;
 }
