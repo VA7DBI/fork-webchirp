@@ -431,8 +431,34 @@ function attachPythonContext(event: SentryEvent, error: unknown): void {
       traceback: error.pythonTraceback,
       js_cause: error.jsCause ? `${error.jsCause.name}: ${error.jsCause.message}` : "",
       rpc_method: error.rpcMethod,
+      raised_in: [error.pythonOrigin?.module, error.pythonOrigin?.function].filter(Boolean).join("."),
     },
   };
+}
+
+// The grouping key for a runtime failure, or null for any other error, which
+// keeps Sentry's default grouping.
+//
+// Sentry groups an event by its exception type and stack. Every runtime
+// failure is thrown from the same line of unwrapRpcEnvelope
+// (web/js/rpc-dispatch.ts), so the stack never differs, and every RadioError
+// from every driver -- a UV-K5 refusing its firmware, a PX-888K answering
+// with no bytes -- became one issue whose title was whichever came last.
+// Archiving that issue would hide them all. The key here is the Python class,
+// the RPC method that failed and the module and function that raised it,
+// which is what tells two such failures apart. The message stays out: it
+// carries values ("Channel 17: ...") and changes with CHIRP's wording.
+export function runtimeFingerprint(error: unknown): string[] | null {
+  if (!isRuntimeCallError(error)) {
+    return null;
+  }
+  const { module, function: fn } = error.pythonOrigin ?? { module: "", function: "" };
+  return [
+    "runtime-call",
+    error.pythonType,
+    error.rpcMethod,
+    module && fn ? `${module}.${fn}` : module || fn,
+  ];
 }
 
 // The loaded SDK namespace, or null while reporting is off or still loading.
@@ -713,7 +739,8 @@ export function initOptions(release: string | undefined, sdk?: TransportFactorie
     // The last gate every event passes through. A failure isIgnoredError
     // names is dropped here; then tags from the UI are applied so an explicit
     // tag on a capture still wins, a runtime failure gets its Python side
-    // attached, and the whole event is redacted -- including events the SDK
+    // attached and its grouping key (runtimeFingerprint), and the whole event
+    // is redacted -- including events the SDK
     // raised on its own, which never went through captureError().
     beforeSend: (event, hint) => {
       const original = hint?.originalException;
@@ -722,6 +749,10 @@ export function initOptions(release: string | undefined, sdk?: TransportFactorie
       }
       event.tags = { ...stringTags(safeContext()), ...(event.tags || {}) };
       attachPythonContext(event, original);
+      const fingerprint = runtimeFingerprint(original);
+      if (fingerprint) {
+        event.fingerprint = fingerprint;
+      }
       return scrubEvent(event);
     },
     // Metrics never pass through beforeSend, so the allowlist has to be applied

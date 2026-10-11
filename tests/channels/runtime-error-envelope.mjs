@@ -215,6 +215,28 @@ json.dumps(_envelope)
   assert.equal(classifyErrorKind(error), "checksum");
 });
 
+test("the envelope names the CHIRP module and function that raised, as Sentry groups by it", async () => {
+  // Read from the raising frame's globals, so a CHIRP module reads as its
+  // dotted name wherever the archive is mounted, and without a line number,
+  // which moves with every pin.
+  const harness = await sharedHarness();
+  const envelope = await harness.runPythonJson(`
+import tempfile as _tempfile
+from chirp import directory as _directory
+from webchirp_bridge.rpc import rpc_error_envelope as _rpc_error_envelope
+with _tempfile.NamedTemporaryFile(suffix=".img") as _f:
+    _f.write(b"not a radio image")
+    _f.flush()
+    try:
+        _directory.get_radio_by_image(_f.name)
+    except Exception as _exc:
+        _envelope = _rpc_error_envelope(_exc)
+json.dumps(_envelope)
+  `);
+  assert.equal(envelope.type, "ImageDetectFailed");
+  assert.deepEqual(envelope.origin, { module: "chirp.directory", function: "get_radio_by_image" });
+});
+
 test("a file that is not a radio image is wrapped for the retry but not reported", async () => {
   // load_image_base64 re-raises CHIRP's ImageDetectFailed as ImageDetectionError
   // with raise ... from, so the cause crosses as explicit and isIgnoredError
@@ -228,6 +250,8 @@ test("a file that is not a radio image is wrapped for the retry but not reported
     error.pythonCauses.map(({ type, module, explicit }) => ({ type, module, explicit })),
     [{ type: "ImageDetectFailed", module: "chirp.errors", explicit: true }],
   );
+  // Raised by the bridge's own wrapper, so that is where it groups.
+  assert.deepEqual(error.pythonOrigin, { module: "webchirp_bridge.images", function: "load_image_base64" });
   assert.equal(isIgnoredError(error), true);
 });
 

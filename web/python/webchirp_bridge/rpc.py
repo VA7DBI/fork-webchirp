@@ -195,6 +195,31 @@ def _python_causes(exc: BaseException) -> list[dict[str, str | bool]]:
     ]
 
 
+def _raise_origin(exc: BaseException) -> dict[str, str]:
+    """Name the module and function whose frame raised ``exc``.
+
+    The innermost frame of ``exc``'s own traceback: for a driver failure, the
+    driver function that raised it (``chirp.drivers.uvk5`` /
+    ``_send_command``), for one of the runtime's own refusals, the bridge
+    function that refused. Sentry groups an event by its JS stack, and every
+    runtime failure is thrown from the same line of ``unwrapRpcEnvelope``
+    (``web/js/rpc-dispatch.ts``), so without this every ``RadioError`` from
+    every driver lands in one issue. Sent as data rather than left for JS to
+    parse out of the traceback text. The module comes from the frame's
+    globals, so it reads the same wherever the runtime is mounted; the line
+    number is left out because it moves with every CHIRP pin, and a group
+    should not.
+    """
+    frames = list(traceback.walk_tb(exc.__traceback__))
+    if not frames:
+        return {"module": "", "function": ""}
+    frame, _lineno = frames[-1]
+    return {
+        "module": str(frame.f_globals.get("__name__", "")),
+        "function": frame.f_code.co_name,
+    }
+
+
 def rpc_error_envelope(exc: Exception) -> dict[str, Any]:
     """Describe one failed call as the fields JS classifies it by.
 
@@ -207,7 +232,8 @@ def rpc_error_envelope(exc: Exception) -> dict[str, Any]:
     base it tests for, ``message`` is ``str(exc)`` alone -- the sentence a user
     can be shown -- and ``traceback`` is the full formatted text the debug panel
     prints. ``causes`` names the exceptions it was chained from, nearest first
-    (``_python_causes``), and ``js`` is the JS error under a ``JsException``
+    (``_python_causes``), ``origin`` the module and function that raised it
+    (``_raise_origin``), and ``js`` is the JS error under a ``JsException``
     (``_js_cause``), or ``None``.
     """
     cls = type(exc)
@@ -218,6 +244,7 @@ def rpc_error_envelope(exc: Exception) -> dict[str, Any]:
         "message": str(exc),
         "traceback": "".join(traceback.format_exception(exc)),
         "causes": _python_causes(exc),
+        "origin": _raise_origin(exc),
         "js": _js_cause(exc),
     }
 
