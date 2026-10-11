@@ -18,6 +18,8 @@ import { FTDI_VENDOR_ID, FtdiSerialPort, isFtdiDevice } from "./ftdi-webusb.ts";
 import { PROLIFIC_VENDOR_ID, Pl2303SerialPort, isProlificDevice } from "./pl2303-webusb.ts";
 import { WebUsbTransport } from "./webusb-transport.ts";
 import { WEB_SERIAL_POLYFILL_URL } from "./cdn-urls.ts";
+import { errorFields } from "./error-details.ts";
+import { createUsbInterfaceBusyError } from "./serial-errors.ts";
 import type { SerialOpenOptions, SerialSignals, SerialTransport, SerialTransportCapabilities } from "./serial-transport.ts";
 import type { WebUsbTransportOptions } from "./webusb-transport.ts";
 
@@ -65,6 +67,35 @@ export const CDC_CAPABILITIES: Readonly<SerialTransportCapabilities> = Object.fr
   reconfigure: "reopen",
 });
 
+// How long open() waits before each retry of a refused interface claim.
+// Android releases a closed device's claim asynchronously, so a reopen right
+// after close() -- every baud pass of the loopback suite, every mid-clone
+// re-rate or reframe (reconfigure: "reopen") -- can find the interface still
+// held and be refused. Five attempts over 750 ms of waiting covered the
+// alternating failures seen on a Raspberry Pi Debug Probe under Android Chrome.
+export const CDC_CLAIM_RETRY_DELAYS_MS: readonly number[] = Object.freeze([50, 100, 200, 400]);
+
+// The polyfill's open() catches every failure, closes the device and throws
+// new Error("Error setting up device: " + error.toString()), so the
+// DOMException's name survives only as text. Matching that text is the one
+// way to tell WebUSB's claim refusal (a NetworkError from claimInterface)
+// from a line-coding or configuration failure; nothing else here classifies
+// by message.
+function isPolyfillClaimRefusal(error: unknown): boolean {
+  const message = String(errorFields(error).message ?? error);
+  return /NetworkError/.test(message) && /claim ?interface/i.test(message);
+}
+
+// Resolve after ms milliseconds; the default pause between claim retries.
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export interface CdcSerialPortOptions extends WebUsbTransportOptions {
+  /** Waits between claim retries; tests pass one that does not sleep. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
 // The CDC polyfill's SerialPort, wrapped to the transport contract
 // (web/js/serial-transport.ts). The polyfill is a CDN module we do not
 // modify, and it keeps its USBDevice private; the device is the one the
@@ -74,15 +105,17 @@ export const CDC_CAPABILITIES: Readonly<SerialTransportCapabilities> = Object.fr
 export class CdcSerialPort extends WebUsbTransport implements SerialTransport {
   polyfillPort: SerialPort;
   getSignals: (() => Promise<SerialInputSignals>) | undefined;
+  _sleep: (ms: number) => Promise<void>;
 
   /**
    * @param polyfillPort web-serial-polyfill's SerialPort, which
    *   mirrors Web Serial's.
    * @param device The device the polyfill port drives.
    */
-  constructor(polyfillPort: SerialPort, device: USBDevice, options: WebUsbTransportOptions = {}) {
-    super(device, options);
+  constructor(polyfillPort: SerialPort, device: USBDevice, options: CdcSerialPortOptions = {}) {
+    super(device, { usb: options.usb });
     this.polyfillPort = polyfillPort;
+    this._sleep = options.sleep ?? defaultSleep;
     this.getSignals = undefined;
     // Input lines, for the loopback page, exactly when the polyfill has them.
     if (typeof polyfillPort.getSignals === "function") {
@@ -105,9 +138,31 @@ export class CdcSerialPort extends WebUsbTransport implements SerialTransport {
     return this.polyfillPort.writable ?? null;
   }
 
-  // Open the polyfill port, then start reporting the device's loss.
+  // Open the polyfill port, then start reporting the device's loss. A claim
+  // refusal is retried after each of CDC_CLAIM_RETRY_DELAYS_MS (the polyfill
+  // has already closed the device again), because right after a close it is
+  // most often Android still releasing the previous claim; once the retries
+  // run out it is the named busy-interface error the chip drivers throw.
+  // Any other failure is thrown at once.
   async open(options: SerialOpenOptions) {
-    await this.polyfillPort.open(options);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.polyfillPort.open(options);
+        break;
+      } catch (error) {
+        if (!isPolyfillClaimRefusal(error)) {
+          throw error;
+        }
+        const delay = CDC_CLAIM_RETRY_DELAYS_MS[attempt];
+        if (delay === undefined) {
+          throw createUsbInterfaceBusyError(
+            `CDC: could not claim the USB interface after ${attempt + 1} attempts `
+            + `(another driver may still control it): ${errorFields(error).message || error}`,
+          );
+        }
+        await this._sleep(delay);
+      }
+    }
     this._watchDisconnect();
   }
 
