@@ -149,6 +149,15 @@ export function isNetworkFailure(error: unknown): boolean {
 // while an exact match leaves them -- defined in
 // webchirp_bridge.runtime_errors -- reported as before.
 //
+// The rule is applied to the failure and to the exception it was raised from,
+// because a wrapper describes the same circumstance as what it wraps.
+// load_image_base64 re-raises chirp.errors.ImageDetectFailed ("Unknown file
+// format": the user dropped something that is not a radio image) as
+// ImageDetectionError, which the all-drivers retry needs by that name -- so
+// judged by its own class the user's file reached Sentry as a bug. Only the
+// nearest cause counts: what that exception was itself raised from was
+// already the wrapper's author's to judge.
+//
 // Dropping the events does not drop the signal. This filters events only,
 // while the failure metrics in web/js/ui/metrics.ts carry error_kind,
 // error_type and the driver out through beforeSendMetric -- so "what share of
@@ -165,9 +174,19 @@ export function isIgnoredError(error: unknown): boolean {
   ) {
     return true;
   }
-  return isRuntimeCallError(error)
-    && error.pythonModule === "chirp.errors"
-    && IGNORED_CHIRP_ERRORS.includes(error.pythonType);
+  if (!isRuntimeCallError(error)) {
+    return false;
+  }
+  const cause = error.pythonCauses[0];
+  return isIgnoredChirpClass(error.pythonType, error.pythonModule)
+    || (cause !== undefined && isIgnoredChirpClass(cause.type, cause.module));
+}
+
+// Whether a Python class, named by class and defining module, is one of the
+// IGNORED_CHIRP_ERRORS. Split out because isIgnoredError asks it twice: of the
+// failure, and of the exception the failure was raised from.
+function isIgnoredChirpClass(type: string, module: string): boolean {
+  return module === "chirp.errors" && IGNORED_CHIRP_ERRORS.includes(type);
 }
 
 const DENY_URLS = Object.freeze([

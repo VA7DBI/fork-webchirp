@@ -102,6 +102,44 @@ test("this app's own errors are clear of the rule despite subclassing RadioError
   )));
 });
 
+test("a wrapper is judged by the CHIRP class it was raised from", () => {
+  // load_image_base64 re-raises ImageDetectFailed as ImageDetectionError, which
+  // the all-drivers retry needs by that name. "Unknown file format" is the
+  // user's file, whatever the wrapper is called (WEBCHIRP-FRONTEND-1G).
+  const notAnImage = runtimeCallError(
+    "ImageDetectionError",
+    "Unable to detect radio from image: Unknown file format",
+    { causes: [{ type: "ImageDetectFailed", module: "chirp.errors", message: "Unknown file format" }] },
+    "load_image_base64",
+  );
+  assert.ok(isIgnored(notAnImage));
+
+  // A driver that broke while matching the image is a defect, wrapped or not.
+  const driverBroke = runtimeCallError(
+    "ImageDetectionError",
+    "Unable to detect radio from image: 'NoneType' object is not subscriptable",
+    { causes: [{ type: "TypeError", module: "builtins", message: "'NoneType' object is not subscriptable" }] },
+    "load_image_base64",
+  );
+  assert.equal(isIgnored(driverBroke), false);
+
+  // The cause is held to the same exact class-and-module rule as the failure.
+  const lookalike = runtimeCallError("RadioError", "Failed to read block", {
+    causes: [{ type: "RadioNoResponse", module: "webchirp_bridge.x", message: "No response" }],
+  });
+  assert.equal(isIgnored(lookalike), false);
+
+  // Only the nearest cause counts: what it was itself raised from was the
+  // wrapper's author's to judge.
+  const deeper = runtimeCallError("RadioError", "Failed to read block", {
+    causes: [
+      { type: "ValueError", module: "builtins", message: "bad length" },
+      { type: "RadioNoResponse", module: "chirp.errors", message: "No response" },
+    ],
+  });
+  assert.equal(isIgnored(deeper), false);
+});
+
 test("a native JS error is never dropped by the runtime rule", () => {
   // Only a RuntimeCallError carries a Python type; a JS error whose text
   // happens to name a CHIRP class is an ordinary failure.

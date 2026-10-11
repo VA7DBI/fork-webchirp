@@ -207,11 +207,11 @@ except _chirp_errors.RadioError as _outer:
 json.dumps(_envelope)
   `);
   assert.equal(envelope.message, "Failed to read block at 0x0040");
-  assert.deepEqual(envelope.causes, [{ type: "RadioError", message: "Block failed checksum!" }]);
+  assert.deepEqual(envelope.causes, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!" }]);
 
   const { unwrapRpcEnvelope } = await import("../../web/js/rpc-dispatch.ts");
   const error = await failure(Promise.resolve().then(() => unwrapRpcEnvelope("download", { ok: false, error: envelope })));
-  assert.deepEqual(error.pythonCauses, [{ type: "RadioError", message: "Block failed checksum!" }]);
+  assert.deepEqual(error.pythonCauses, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!" }]);
   assert.equal(classifyErrorKind(error), "checksum");
 });
 

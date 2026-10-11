@@ -17,6 +17,8 @@ import { errorDetails, errorFields } from "./error-details.ts";
 export interface PythonCause {
   /** The exception's class name. */
   type: string;
+  /** The module that defines the class. */
+  module: string;
   /** `str(exc)`. */
   message: string;
 }
@@ -56,7 +58,7 @@ export interface RpcErrorFields {
 // trace reads "RadioError: Radio did not respond"; message is str(exc) alone,
 // the sentence a user can be shown. The rest is what the envelope carried:
 // pythonBases (every class above it, up to BaseException), pythonModule, the
-// full pythonTraceback the debug panel prints, pythonCauses ({type, message}
+// full pythonTraceback the debug panel prints, pythonCauses ({type, module, message}
 // of each exception it was chained from, nearest first), jsCause ({name,
 // message} of the JS error behind a JsException, or null) and the rpcMethod
 // that failed.
@@ -82,6 +84,7 @@ export class RuntimeCallError extends Error {
     this.pythonTraceback = String(envelope.traceback || "");
     this.pythonCauses = Object.freeze((envelope.causes || []).map((cause) => Object.freeze({
       type: String(cause?.type || ""),
+      module: String(cause?.module || ""),
       message: String(cause?.message || ""),
     })));
     this.jsCause = envelope.js

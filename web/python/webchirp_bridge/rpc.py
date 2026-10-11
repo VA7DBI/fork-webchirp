@@ -171,10 +171,17 @@ def _python_causes(exc: BaseException) -> list[dict[str, str]]:
     block" -- so the outer message alone can hide what went wrong. JS
     classifies a failure by what it said (``classifyErrorKind``,
     ``web/js/ui/analytics.ts``), and these messages are part of what it said;
-    the traceback's frames, which are not, stay out.
+    the traceback's frames, which are not, stay out. ``module`` is there for
+    reporting: ``isIgnoredError`` (``web/js/sentry.ts``) judges a wrapper by
+    the CHIRP class it was raised from, and a CHIRP class is named by class
+    and defining module together.
     """
     return [
-        {"type": type(current).__name__, "message": str(current)}
+        {
+            "type": type(current).__name__,
+            "module": type(current).__module__,
+            "message": str(current),
+        }
         for current in _exception_chain(exc)[1:]
     ]
 
