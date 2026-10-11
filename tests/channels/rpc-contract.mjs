@@ -226,8 +226,11 @@ test("a raised RuntimePreconditionError answers with an error envelope, not a re
   assert.equal(reply.ok, false);
   assert.deepEqual(
     Object.keys(reply.error).sort(),
-    ["bases", "causes", "js", "message", "module", "traceback", "type"],
+    ["bases", "causes", "js", "message", "module", "origin", "traceback", "type"],
   );
+  // Where it was raised, as data: the guard in the session registry that
+  // refused the unknown id.
+  assert.deepEqual(reply.error.origin, { module: "webchirp_bridge.session", function: "resolve_session" });
   assert.equal(reply.error.type, "RuntimePreconditionError");
   assert.equal(reply.error.module, "webchirp_bridge.runtime_errors");
   // Every class above it up to BaseException, nearest first, object left out:

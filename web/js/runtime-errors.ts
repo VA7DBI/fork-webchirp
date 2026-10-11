@@ -38,6 +38,16 @@ export interface JsCause {
 }
 
 /**
+ * Where a Python exception was raised: the module and function of the
+ * innermost frame of its traceback (`_raise_origin`,
+ * web/python/webchirp_bridge/rpc.py). Empty strings when it had no frames.
+ */
+export interface PythonOrigin {
+  module: string;
+  function: string;
+}
+
+/**
  * The `error` half of a failed envelope, as `rpc_error_envelope`
  * (web/python/webchirp_bridge/rpc.py) builds it. Every field is optional here
  * because the constructor below tolerates a partial one (tests build them by
@@ -55,6 +65,7 @@ export interface RpcErrorFields {
   /** The full formatted traceback. */
   traceback?: string;
   causes?: Partial<PythonCause>[];
+  origin?: Partial<PythonOrigin> | null;
   js?: Partial<JsCause> | null;
 }
 
@@ -65,14 +76,16 @@ export interface RpcErrorFields {
 // pythonBases (every class above it, up to BaseException), pythonModule, the
 // full pythonTraceback the debug panel prints, pythonCauses ({type, module,
 // message, explicit} of each exception it was chained from, nearest first),
-// jsCause ({name, message} of the JS error behind a JsException, or null)
-// and the rpcMethod that failed.
+// pythonOrigin ({module, function} that raised it), jsCause ({name, message}
+// of the JS error behind a JsException, or null) and the rpcMethod that
+// failed.
 export class RuntimeCallError extends Error {
   pythonType: string;
   pythonBases: readonly string[];
   pythonModule: string;
   pythonTraceback: string;
   pythonCauses: readonly Readonly<PythonCause>[];
+  pythonOrigin: Readonly<PythonOrigin>;
   jsCause: Readonly<JsCause> | null;
   rpcMethod: string;
 
@@ -93,6 +106,10 @@ export class RuntimeCallError extends Error {
       message: String(cause?.message || ""),
       explicit: cause?.explicit === true,
     })));
+    this.pythonOrigin = Object.freeze({
+      module: String(envelope.origin?.module || ""),
+      function: String(envelope.origin?.function || ""),
+    });
     this.jsCause = envelope.js
       ? Object.freeze({ name: String(envelope.js.name || ""), message: String(envelope.js.message || "") })
       : null;

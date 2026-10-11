@@ -17,6 +17,7 @@ import {
   isIgnoredError,
   isSentryHost,
   resetSentryForTests,
+  runtimeFingerprint,
   scrubEvent,
   scrubMetric,
   scrubMetricAttributes,
@@ -170,6 +171,59 @@ test("scripts that are not this app's are denied by origin", () => {
   assert.ok(denied("iabjs://navigation_performance_logger_android"));
   assert.equal(denied("https://webchirp.org/js/app.OI2X7MXU.js"), false);
   assert.equal(denied("https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.asm.js"), false);
+});
+
+test("runtime failures group by class, method and the function that raised them", () => {
+  // Every runtime failure is thrown from one line of unwrapRpcEnvelope, so
+  // Sentry's stack-based grouping put every RadioError from every driver in
+  // one issue. Two drivers' failures must now land apart...
+  const firmware = runtimeCallError("RadioError", "Firmware version is not supported by this driver", {
+    origin: { module: "chirp.drivers.uvk5", function: "_sayhello" },
+  }, "download_selected_radio");
+  const shortRead = runtimeCallError("RadioError", "Tried to read 8 bytes, but got 0 bytes instead.", {
+    origin: { module: "chirp.drivers.puxing_px888k", function: "_read" },
+  }, "download_selected_radio");
+  assert.deepEqual(runtimeFingerprint(firmware), [
+    "runtime-call", "RadioError", "download_selected_radio", "chirp.drivers.uvk5._sayhello",
+  ]);
+  assert.notDeepEqual(runtimeFingerprint(firmware), runtimeFingerprint(shortRead));
+
+  // ...while one raise site stays one issue whatever values its message names.
+  const channel = (n) => runtimeCallError(
+    "RuntimeUnsupportedError",
+    `Channel ${n}: This image is read-only due to being from a radio with unsupported firmware`,
+    { origin: { module: "webchirp_bridge.radio_memories", function: "_apply_rows_to_radio_instance" } },
+    "export_image_base64",
+  );
+  assert.deepEqual(runtimeFingerprint(channel(2)), runtimeFingerprint(channel(17)));
+
+  // The same raise site reached through a different flow is a different issue.
+  const upload = runtimeCallError("RadioError", "Firmware version is not supported by this driver", {
+    origin: { module: "chirp.drivers.uvk5", function: "_sayhello" },
+  }, "upload_selected_radio");
+  assert.notDeepEqual(runtimeFingerprint(firmware), runtimeFingerprint(upload));
+});
+
+test("beforeSend sets the runtime grouping key and leaves other errors to Sentry", () => {
+  const error = runtimeCallError("RadioError", "Header short read", {
+    origin: { module: "chirp.drivers.uvk5_egzumer", function: "_receive_reply" },
+  }, "download_selected_radio");
+  const event = initOptions().beforeSend(
+    { exception: { values: [{ type: error.name, value: error.message }] } },
+    { originalException: error },
+  );
+  assert.deepEqual(event.fingerprint, [
+    "runtime-call", "RadioError", "download_selected_radio", "chirp.drivers.uvk5_egzumer._receive_reply",
+  ]);
+  assert.equal(event.contexts.python.raised_in, "chirp.drivers.uvk5_egzumer._receive_reply");
+
+  const plain = new Error("something else broke");
+  const plainEvent = initOptions().beforeSend(
+    { exception: { values: [{ type: plain.name, value: plain.message }] } },
+    { originalException: plain },
+  );
+  assert.equal(plainEvent.fingerprint, undefined);
+  assert.equal(runtimeFingerprint(plain), null);
 });
 
 test("scrubText removes the user data a CHIRP traceback carries", () => {
