@@ -68,12 +68,16 @@ export const SENTRY_HOSTS = Object.freeze([
   "webchirp.org",
 ]);
 
-// Browser noise that is never actionable: a benign layout notification. It is
-// raised outside this app's code, so nothing here can name it, and it stays a
-// message pattern for the SDK's own ignoreErrors filter. Everything this app
-// raises is filtered by name or type instead (isIgnoredError below).
+// Browser noise that is never actionable: a benign layout notification, and a
+// browser extension's messaging call failing inside the page (Safari and
+// Firefox word it this way; the event carries no extension frame for
+// denyUrls to match, WEBCHIRP-FRONTEND-K). Both are raised outside this app's
+// code, so nothing here can name them, and they stay message patterns for the
+// SDK's own ignoreErrors filter. Everything this app raises is filtered by
+// name or type instead (isIgnoredError below).
 const IGNORE_ERRORS = Object.freeze([
   /ResizeObserver loop/i,
+  /Invalid call to runtime\.sendMessage\(\)/,
 ]);
 
 // The CHIRP errors that describe the user's file, the user's radio or the
@@ -189,10 +193,15 @@ function isIgnoredChirpClass(type: string, module: string): boolean {
   return module === "chirp.errors" && IGNORED_CHIRP_ERRORS.includes(type);
 }
 
+// Script origins that are never this app: browser extensions, and the script
+// Facebook's and Instagram's in-app browser on Android injects into every page
+// it shows (iabjs://, whose "Java object is gone" outlives the app's own
+// WebView bridge -- WEBCHIRP-FRONTEND-4).
 const DENY_URLS = Object.freeze([
   /^chrome-extension:\/\//i,
   /^moz-extension:\/\//i,
   /^safari-(?:web-)?extension:\/\//i,
+  /^iabjs:\/\//i,
 ]);
 
 // Everything a user owns that could otherwise ride along inside an error

@@ -152,7 +152,24 @@ test("other network and serial failures remain reportable", () => {
 });
 
 test("only browser noise is left to message patterns", () => {
-  assert.deepEqual(initOptions().ignoreErrors.map(String), ["/ResizeObserver loop/i"]);
+  assert.deepEqual(initOptions().ignoreErrors.map(String), [
+    "/ResizeObserver loop/i",
+    "/Invalid call to runtime\\.sendMessage\\(\\)/",
+  ]);
+  const [, extension] = initOptions().ignoreErrors;
+  assert.ok(extension instanceof RegExp);
+  assert.ok(extension.test("Invalid call to runtime.sendMessage(). Tab not found."));
+});
+
+test("scripts that are not this app's are denied by origin", () => {
+  const denyUrls = initOptions().denyUrls;
+  assert.ok(Array.isArray(denyUrls));
+  const denied = (url) => denyUrls.some((pattern) => pattern instanceof RegExp && pattern.test(url));
+  assert.ok(denied("chrome-extension://abcdef/content.js"));
+  // Facebook's and Instagram's in-app browser on Android.
+  assert.ok(denied("iabjs://navigation_performance_logger_android"));
+  assert.equal(denied("https://webchirp.org/js/app.OI2X7MXU.js"), false);
+  assert.equal(denied("https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.asm.js"), false);
 });
 
 test("scrubText removes the user data a CHIRP traceback carries", () => {
