@@ -167,6 +167,10 @@ def _read_radio_payload(
     session, extract the rows, record the slots that would not decode so a
     later upload leaves them alone, and serialize the radio-wide settings
     read-only.
+
+    A driver whose ``get_settings()`` raises must not cost the user the
+    channels that decoded fine: the settings helper logs it and answers with
+    none, which the UI reads as "no Settings tab".
     """
     session.record_radio(radio, origin)
     rows, unreadable = _radio_rows_from_instance(radio)
