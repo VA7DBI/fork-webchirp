@@ -396,7 +396,10 @@ test("each transport declares the capabilities its adapter has", async () => {
     declared[name] = { transport: port.transport, ...port.capabilities };
     await port.close();
   }
-  const chip = { transport: "webusb", framing: false, signals: true, reconfigure: "reopen" };
+  // Every chip driver programs the frame open() asks for. The CH340 declares
+  // it only once open() has read a chip version that keeps framing in its LCR
+  // (the harness answers 0x31); ch340-webusb.mjs covers the older parts.
+  const chip = { transport: "webusb", framing: true, signals: true, reconfigure: "reopen" };
   assert.deepEqual(declared, {
     ftdi: chip,
     pl2303: chip,

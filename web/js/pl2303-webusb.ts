@@ -9,9 +9,19 @@
 // deliberate divergences from those ports, matching the kernel instead:
 // vendor writes use bmRequestType vendor|device (not class), and vendor reads
 // use bRequest 0x01 on non-HXN chips (0x81 is HXN-only).
-import { WebUsbTransport } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 export const PROLIFIC_VENDOR_ID = 0x067b;
@@ -53,6 +63,16 @@ const RESET_HXN_TX_PIPE = 0x02;
 const FLOWCONTROL_HXN_REGISTER = 0x0a;
 const FLOWCONTROL_HXN_NONE = 0xff;
 
+// Input control line registers, read with the chip's own vendor read request,
+// from usb-serial-for-android's ProlificSerialDriver (GET_CONTROL_REQUEST and
+// GET_CONTROL_HXN_REQUEST). The lines are active low, and the two register
+// maps place them differently. The kernel has no poll for these: it caches
+// the UART state notifications from the interrupt endpoint instead.
+const GET_CONTROL_REGISTER = 0x87;
+const GET_CONTROL_HXN_REGISTER = 0x80;
+const GET_CONTROL_LINES = { cts: 0x08, dsr: 0x04, dcd: 0x02, ri: 0x01 };
+const GET_CONTROL_HXN_LINES = { cts: 0x08, dsr: 0x20, dcd: 0x40, ri: 0x80 };
+
 // CDC-style class requests on the interface (shared by all chip types).
 const GET_LINE_REQUEST = 0x21;
 const SET_LINE_REQUEST = 0x20;
@@ -67,6 +87,18 @@ const SUPPORTED_BAUD_RATES = [
   57600, 115200, 230400, 460800, 614400,
   921600, 1228800, 2457600, 3000000, 6000000,
 ];
+
+// The 7-byte CDC-style line coding block for a rate and frame, laid out as the
+// kernel's pl2303_set_termios() writes it: LE32 baud, then stop bits (0 = 1,
+// 2 = 2), parity (0 none, 1 odd, 2 even) and the data bit count.
+export function pl2303LineCoding(baudRate: number, { dataBits, parity, stopBits }: ChipFraming): DataView<ArrayBuffer> {
+  const coding = new DataView(new ArrayBuffer(7));
+  coding.setUint32(0, pickPl2303BaudRate(baudRate), true);
+  coding.setUint8(4, stopBits === 2 ? 2 : 0);
+  coding.setUint8(5, parity === "odd" ? 1 : parity === "even" ? 2 : 0);
+  coding.setUint8(6, dataBits);
+  return coding;
+}
 
 export function isProlificDevice(device: Partial<USBDevice> | null | undefined): boolean {
   return !!device && Number(device.vendorId) === PROLIFIC_VENDOR_ID;
@@ -120,12 +152,6 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
   _controlLines: number;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: the line-coding block is written 8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -145,6 +171,12 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
   // replaces it with what the descriptor actually reports.
   get packetSize() {
     return this._inPacketSize;
+  }
+
+  // open() programs dataBits/stopBits/parity in the line coding block, on
+  // every chip generation, so a framing change is a reopen like a rate change.
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return WEBUSB_FRAMING_CHIP_CAPABILITIES;
   }
 
   _isHxn() {
@@ -274,8 +306,8 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
   }
 
-  // CDC-style line coding: LE32 baud, 1 stop bit, no parity, 8 data bits.
-  async _setLineCoding(baudRate: number): Promise<void> {
+  // CDC-style line coding: the rate and the frame (pl2303LineCoding).
+  async _setLineCoding(baudRate: number, framing: ChipFraming): Promise<void> {
     // Read current coding first, as every known driver does before setting.
     await this.device.controlTransferIn({
       requestType: "class",
@@ -284,16 +316,15 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
       value: 0,
       index: this._interfaceNumber,
     }, 7);
-    const coding = new DataView(new ArrayBuffer(7));
-    coding.setUint32(0, pickPl2303BaudRate(baudRate), true);
-    coding.setUint8(4, 0); // 1 stop bit
-    coding.setUint8(5, 0); // no parity
-    coding.setUint8(6, 8); // 8 data bits
+    const coding = pl2303LineCoding(baudRate, framing);
     await this._classInterfaceOut(SET_LINE_REQUEST, 0, coding.buffer);
   }
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame this chip cannot carry
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "PL2303");
     // close() latches _closed and the read loop exits as soon as it is set;
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
@@ -343,7 +374,7 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
     await this._purgeBuffers();
     await this._setFlowControlNone();
-    await this._setLineCoding(baudRate);
+    await this._setLineCoding(baudRate, framing);
 
     this._setupStreams();
     this._watchDisconnect();
@@ -364,6 +395,29 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     }
     await this._classInterfaceOut(SET_CONTROL_REQUEST, lines, undefined);
     this._controlLines = lines;
+  }
+
+  // Input control lines, polled from the chip's control-line register (0x87,
+  // or 0x80 on HXN silicon), whose bits are active low. Polled because WebUSB
+  // gives no cheap way to keep the interrupt endpoint's notifications cached,
+  // and a poll answers now. Taken from usb-serial-for-android, which reads the
+  // same register for its first answer; not yet measured on an adapter. The
+  // loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const hxn = this._isHxn();
+    const result = await this._vendorRead(hxn ? GET_CONTROL_HXN_REGISTER : GET_CONTROL_REGISTER, 0);
+    const data = result?.data;
+    if (!data || data.byteLength < 1) {
+      throw new Error("PL2303: control line status request returned no data");
+    }
+    const status = data.getUint8(0);
+    const lines = hxn ? GET_CONTROL_HXN_LINES : GET_CONTROL_LINES;
+    return {
+      clearToSend: !(status & lines.cts),
+      dataSetReady: !(status & lines.dsr),
+      dataCarrierDetect: !(status & lines.dcd),
+      ringIndicator: !(status & lines.ri),
+    };
   }
 
   _setupStreams() {
@@ -454,10 +508,10 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     // transfers while the consumer is busy.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
+    // Every byte of each chunk, or an error: a stalled or short bulk OUT
+    // transfer resolves rather than rejects, so it is checked (writeBulkOut).
     this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
-      write: async (chunk) => {
-        await device.transferOut(outEndpoint, chunk);
-      },
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "PL2303"),
     });
   }
 

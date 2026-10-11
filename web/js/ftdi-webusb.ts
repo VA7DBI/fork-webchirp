@@ -7,9 +7,19 @@
 // the generic CDC-ACM polyfill cannot drive.
 //
 // Protocol constants and the baud-rate divisor math follow libftdi.
-import { WebUsbTransport } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 export const FTDI_VENDOR_ID = 0x0403;
@@ -20,6 +30,7 @@ const SIO_SET_MODEM_CTRL = 0x01;
 const SIO_SET_FLOW_CTRL = 0x02;
 const SIO_SET_BAUD_RATE = 0x03;
 const SIO_SET_DATA = 0x04;
+const SIO_POLL_MODEM_STATUS = 0x05;
 const SIO_SET_LATENCY_TIMER = 0x09;
 
 // SIO_RESET wValue variants: 0 resets the port, 1/2 purge the RX/TX FIFOs.
@@ -46,11 +57,34 @@ const LATENCY_TIMER_MS = 4;
 // boundary and the event loop, hence the deeper queue.
 const READ_PIPELINE_DEPTH = 16;
 
-// 8 data bits, no parity, 1 stop bit.
-const DATA_8N1 = 0x0008;
+// SIO_SET_DATA wValue, as the kernel's ftdi_sio.h lays it out: the data bit
+// count in the low byte, parity in bits 8-10, stop bits in bits 11-12 (bit 14
+// is break, never set here).
+const DATA_PARITY_NONE = 0x0 << 8;
+const DATA_PARITY_ODD = 0x1 << 8;
+const DATA_PARITY_EVEN = 0x2 << 8;
+const DATA_STOP_BITS_1 = 0x0 << 11;
+const DATA_STOP_BITS_2 = 0x2 << 11;
+
+// Modem status bits, in the first byte of the SIO_POLL_MODEM_STATUS reply (the
+// same byte that heads every bulk IN packet), from the kernel's ftdi_sio.h.
+const MODEM_STATUS_CTS = 0x10;
+const MODEM_STATUS_DSR = 0x20;
+const MODEM_STATUS_RI = 0x40;
+const MODEM_STATUS_DCD = 0x80; // RLSD
 
 // Control requests other than baud target port/interface A (libftdi index 1).
 const PORT_INDEX = 1;
+
+// The SIO_SET_DATA wValue for a frame, encoded as the kernel's
+// ftdi_set_termios() does: 8N1 is 0x0008, 8E1 0x0208, 7E1 0x0207, 8N2 0x1008.
+export function ftdiDataValue({ dataBits, parity, stopBits }: ChipFraming): number {
+  const parityBits = parity === "odd"
+    ? DATA_PARITY_ODD
+    : parity === "even" ? DATA_PARITY_EVEN : DATA_PARITY_NONE;
+  const stopBitsValue = stopBits === 2 ? DATA_STOP_BITS_2 : DATA_STOP_BITS_1;
+  return dataBits | parityBits | stopBitsValue;
+}
 
 export function isFtdiDevice(device: Partial<USBDevice> | null | undefined): boolean {
   return !!device && Number(device.vendorId) === FTDI_VENDOR_ID;
@@ -112,12 +146,6 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
   _inPacketSize: number;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: SIO_SET_DATA is issued as DATA_8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -137,6 +165,12 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     return this._inPacketSize;
   }
 
+  // open() programs dataBits/stopBits/parity through SIO_SET_DATA, so a
+  // framing change is a reopen like a rate change.
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return WEBUSB_FRAMING_CHIP_CAPABILITIES;
+  }
+
   async _controlOut(request: number, value: number, index: number): Promise<void> {
     const result = await this.device.controlTransferOut({
       requestType: "vendor",
@@ -152,6 +186,9 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame this chip cannot carry
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "FTDI");
     // close() latches _closed, and the read loop below exits the moment it is
     // set. Reopening the same port object without clearing it yields streams
     // that never deliver a byte.
@@ -194,7 +231,7 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     await this._controlOut(SIO_RESET, SIO_RESET_PURGE_TX, PORT_INDEX);
     const baud = ftdiConvertBaudrate(baudRate);
     await this._controlOut(SIO_SET_BAUD_RATE, baud.value, baud.index);
-    await this._controlOut(SIO_SET_DATA, DATA_8N1, PORT_INDEX);
+    await this._controlOut(SIO_SET_DATA, ftdiDataValue(framing), PORT_INDEX);
     await this._controlOut(SIO_SET_FLOW_CTRL, 0x0000, PORT_INDEX);
     await this._controlOut(SIO_SET_LATENCY_TIMER, LATENCY_TIMER_MS, PORT_INDEX);
 
@@ -221,6 +258,35 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     if (value !== 0) {
       await this._controlOut(SIO_SET_MODEM_CTRL, value, PORT_INDEX);
     }
+  }
+
+  // Input control lines, polled with SIO_POLL_MODEM_STATUS as the kernel's
+  // tiocmget does (ftdi_get_modem_status), rather than read off the bulk IN
+  // headers: a poll answers now, even when no reader is pulling packets. The
+  // loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const result = await this.device.controlTransferIn({
+      requestType: "vendor",
+      recipient: "device",
+      request: SIO_POLL_MODEM_STATUS,
+      value: 0,
+      index: PORT_INDEX,
+    }, 2);
+    if (result && result.status && result.status !== "ok") {
+      throw new Error(`FTDI modem status request failed: ${result.status}`);
+    }
+    // The kernel accepts a 1-byte reply (the original SIO answers only that).
+    const data = result?.data;
+    if (!data || data.byteLength < 1) {
+      throw new Error("FTDI: modem status request returned no data");
+    }
+    const status = data.getUint8(0);
+    return {
+      clearToSend: Boolean(status & MODEM_STATUS_CTS),
+      dataSetReady: Boolean(status & MODEM_STATUS_DSR),
+      dataCarrierDetect: Boolean(status & MODEM_STATUS_DCD),
+      ringIndicator: Boolean(status & MODEM_STATUS_RI),
+    };
   }
 
   _setupStreams() {
@@ -322,10 +388,10 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     // transfers while the consumer is busy.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
+    // Every byte of each chunk, or an error: a stalled or short bulk OUT
+    // transfer resolves rather than rejects, so it is checked (writeBulkOut).
     this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
-      write: async (chunk) => {
-        await device.transferOut(outEndpoint, chunk);
-      },
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "FTDI"),
     });
   }
 

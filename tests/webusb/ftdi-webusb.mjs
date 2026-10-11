@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FtdiSerialPort } from "../../web/js/ftdi-webusb.ts";
+import { FtdiSerialPort, ftdiDataValue } from "../../web/js/ftdi-webusb.ts";
 import { makeFakeUsbDevice, okTransfer } from "../support/fake-usb.mjs";
 import { tick } from "../support/globals.mjs";
 import {
@@ -8,6 +8,11 @@ import {
   expectOnePacketPerTransfer,
   expectStallRecovery,
 } from "../support/usb-read-path.mjs";
+import {
+  expectShortWriteResumed,
+  expectStalledWriteFails,
+  expectStuckWriteFails,
+} from "../support/usb-write-path.mjs";
 
 // A fake FTDI USBDevice: a bulk pair (plus whatever endpoints the test adds),
 // recording every control write, with bulk IN packets framed the way this
@@ -64,6 +69,55 @@ test("FtdiSerialPort.open() purges FIFOs and sets the latency timer", async () =
   ]);
   assert.ok(port.readable, "readable stream must be set up");
   assert.ok(port.writable, "writable stream must be set up");
+});
+
+test("ftdiDataValue encodes SIO_SET_DATA as the kernel's ftdi_set_termios does", () => {
+  // Data bits in the low byte, parity at bits 8-10 (1 odd, 2 even), stop bits
+  // at bits 11-12 (2 means two).
+  assert.equal(ftdiDataValue({ dataBits: 8, parity: "none", stopBits: 1 }), 0x0008);
+  assert.equal(ftdiDataValue({ dataBits: 8, parity: "even", stopBits: 1 }), 0x0208);
+  assert.equal(ftdiDataValue({ dataBits: 7, parity: "even", stopBits: 1 }), 0x0207);
+  assert.equal(ftdiDataValue({ dataBits: 8, parity: "none", stopBits: 2 }), 0x1008);
+  assert.equal(ftdiDataValue({ dataBits: 8, parity: "odd", stopBits: 1 }), 0x0108);
+});
+
+for (const [label, options, value] of [
+  ["8E1", { dataBits: 8, parity: "even", stopBits: 1 }, 0x0208],
+  ["7E1", { dataBits: 7, parity: "even", stopBits: 1 }, 0x0207],
+  ["8N2", { dataBits: 8, parity: "none", stopBits: 2 }, 0x1008],
+]) {
+  test(`FtdiSerialPort.open() programs ${label} through SIO_SET_DATA`, async () => {
+    // Radios that need parity (tk280: even) or two stop bits (tg_uv2p) are
+    // only reachable on Android through this driver, so the frame open() is
+    // asked for has to be the frame on the wire.
+    const { device, controlCalls } = makeFakeDevice();
+    const port = new FtdiSerialPort(device);
+    await port.open({ baudRate: 9600, ...options });
+
+    assert.deepEqual(
+      controlCalls.filter((call) => call.request === 0x04),
+      [{ request: 0x04, value, index: 1 }],
+    );
+  });
+}
+
+test("FtdiSerialPort.open() refuses a frame it cannot program before touching the chip", async () => {
+  const { device, controlCalls } = makeFakeDevice();
+  let opened = false;
+  device.open = async () => { opened = true; };
+  const port = new FtdiSerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, parity: "mark" }),
+    /FTDI: cannot program parity "mark"/,
+  );
+  assert.equal(opened, false, "the device must not be opened for a frame it cannot carry");
+  assert.deepEqual(controlCalls, []);
+});
+
+test("FtdiSerialPort declares framing, since open() programs it", () => {
+  const { device } = makeFakeDevice();
+  assert.equal(new FtdiSerialPort(device).capabilities.framing, true);
 });
 
 test("FtdiSerialPort.open() ignores interrupt endpoints when selecting bulk data", async () => {
@@ -172,4 +226,78 @@ test("FtdiSerialPort asks for exactly one packet per bulk IN transfer", async ()
     endpointNumber: 1,
     packetSize: 64,
   });
+});
+
+test("FtdiSerialPort write path reports a stalled bulk OUT instead of losing bytes", async () => {
+  // WebUSB resolves a failed bulk OUT with a status rather than rejecting, so a
+  // write path that ignores the result reports success on a protocol block that
+  // went nowhere: an upload truncated silently, surfacing later as a read
+  // timeout, with the endpoint left halted for every retry.
+  await expectStalledWriteFails({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    chip: "FTDI",
+    endpointNumber: 2,
+  });
+});
+
+test("FtdiSerialPort write path resumes a short bulk OUT transfer", async () => {
+  // bytesWritten can be less than the chunk; assuming a partial write was a
+  // whole one drops the tail of a frame silently.
+  await expectShortWriteResumed({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    endpointNumber: 2,
+  });
+});
+
+test("FtdiSerialPort write path gives up on a transfer that never progresses", async () => {
+  await expectStuckWriteFails({
+    Port: FtdiSerialPort,
+    fake: makeFakeDevice(),
+    chip: "FTDI",
+  });
+});
+
+test("FtdiSerialPort.getSignals polls the modem status and decodes its first byte", async () => {
+  // SIO_POLL_MODEM_STATUS, as the kernel's tiocmget sends it: vendor, device,
+  // to port A, two bytes back. The first is the same modem status byte that
+  // heads every bulk IN packet: CTS 0x10, DSR 0x20, RI 0x40, DCD (RLSD) 0x80;
+  // its low nibble is always 0x01 and means nothing.
+  const { device } = makeFakeDevice();
+  const requests = [];
+  let status = 0x01 | 0x10 | 0x40;
+  device.controlTransferIn = async (setup, length) => {
+    requests.push({ ...setup, length });
+    return { status: "ok", data: new DataView(new Uint8Array([status, 0x60]).buffer) };
+  };
+  const port = new FtdiSerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: true,
+    dataSetReady: false,
+    dataCarrierDetect: false,
+    ringIndicator: true,
+  });
+  assert.deepEqual(requests, [
+    { requestType: "vendor", recipient: "device", request: 0x05, value: 0, index: 1, length: 2 },
+  ]);
+
+  status = 0x01 | 0x20 | 0x80;
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: false,
+    dataSetReady: true,
+    dataCarrierDetect: true,
+    ringIndicator: false,
+  });
+});
+
+test("FtdiSerialPort.getSignals reports a failed status request", async () => {
+  const { device } = makeFakeDevice();
+  device.controlTransferIn = async () => ({ status: "stall" });
+  const port = new FtdiSerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  await assert.rejects(port.getSignals(), /FTDI modem status request failed: stall/);
 });

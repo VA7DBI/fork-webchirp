@@ -4,6 +4,7 @@ import {
   CH340_DEVICE_IDS,
   Ch340SerialPort,
   ch340GetDivisor,
+  ch340LineControl,
   isCh340Device,
 } from "../../web/js/ch340-webusb.ts";
 import { createWebUsbSerial } from "../../web/js/webusb-serial.ts";
@@ -14,6 +15,11 @@ import {
   expectOnePacketPerTransfer,
   expectStallRecovery,
 } from "../support/usb-read-path.mjs";
+import {
+  expectShortWriteResumed,
+  expectStalledWriteFails,
+  expectStuckWriteFails,
+} from "../support/usb-write-path.mjs";
 
 // Fake USBDevice for a CH340: bulk OUT + bulk IN + interrupt IN (modem status)
 // endpoints, recording every control transfer and answering the version read
@@ -172,6 +178,76 @@ test("Ch340SerialPort.open() skips the LCR write and bit 7 on pre-0x30 chips", a
   ]);
 });
 
+test("ch340LineControl builds the LCR as the kernel's ch341_set_termios does", () => {
+  // RX+TX enable (0xc0), CS7 0x02 / CS8 0x03, parity enable 0x08 plus 0x10 for
+  // even, 0x04 for two stop bits.
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "none", stopBits: 1 }), 0xc3);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "even", stopBits: 1 }), 0xdb);
+  assert.equal(ch340LineControl({ dataBits: 7, parity: "even", stopBits: 1 }), 0xda);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "none", stopBits: 2 }), 0xc7);
+  assert.equal(ch340LineControl({ dataBits: 8, parity: "odd", stopBits: 1 }), 0xcb);
+});
+
+for (const [label, options, lcr] of [
+  ["8E1", { dataBits: 8, parity: "even", stopBits: 1 }, 0xdb],
+  ["7E1", { dataBits: 7, parity: "even", stopBits: 1 }, 0xda],
+  ["8N2", { dataBits: 8, parity: "none", stopBits: 2 }, 0xc7],
+]) {
+  test(`Ch340SerialPort.open() programs ${label} in the LCR pair`, async () => {
+    const { device, controlOut } = makeFakeDevice({ version: 0x31 });
+    const port = new Ch340SerialPort(device);
+    await port.open({ baudRate: 9600, ...options });
+
+    assert.deepEqual(
+      controlOut.filter((call) => call.request === 0x9a && call.value === 0x2518),
+      [{ request: 0x9a, value: 0x2518, index: lcr }],
+    );
+  });
+}
+
+test("Ch340SerialPort declares framing only once it knows the chip keeps it in the LCR", async () => {
+  // The version is learnt at open(); before that the port answers
+  // conservatively, and a pre-0x30 part stays 8N1 only, so the bridge refuses
+  // a framing change on it instead of reopening into a frame it never got.
+  const modern = new Ch340SerialPort(makeFakeDevice({ version: 0x31 }).device);
+  assert.equal(modern.capabilities.framing, false);
+  await modern.open({ baudRate: 9600 });
+  assert.equal(modern.capabilities.framing, true);
+
+  const old = new Ch340SerialPort(makeFakeDevice({ version: 0x27 }).device);
+  await old.open({ baudRate: 9600 });
+  assert.equal(old.capabilities.framing, false);
+});
+
+test("Ch340SerialPort.open() refuses a non-8N1 frame on a pre-0x30 chip and hands the device back", async () => {
+  const { device, controlOut } = makeFakeDevice({ version: 0x27 });
+  let released = 0;
+  let closed = 0;
+  device.releaseInterface = async () => { released += 1; };
+  device.close = async () => { closed += 1; };
+  const port = new Ch340SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, parity: "even" }),
+    /^Error: CH340: chip version 0x27 runs at 8N1 only \(asked for 8E1\)/,
+  );
+  assert.deepEqual(controlOut, [], "nothing may be configured for a frame the chip cannot carry");
+  assert.equal(released, 1);
+  assert.equal(closed, 1);
+});
+
+test("Ch340SerialPort.open() refuses a frame it cannot program before touching the chip", async () => {
+  const { device, controlIn, controlOut } = makeFakeDevice();
+  const port = new Ch340SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, stopBits: 1.5 }),
+    /CH340: cannot program 1.5 stop bits/,
+  );
+  assert.deepEqual(controlIn, []);
+  assert.deepEqual(controlOut, []);
+});
+
 test("Ch340SerialPort.open() falls back to the quirk when register reads stall", async () => {
   const { device } = makeFakeDevice({ readRegStatus: "stall" });
   const port = new Ch340SerialPort(device);
@@ -246,4 +322,81 @@ test("Ch340SerialPort asks for exactly one packet per bulk IN transfer", async (
     endpointNumber: 2,
     packetSize: 32,
   });
+});
+
+test("Ch340SerialPort write path reports a stalled bulk OUT instead of losing bytes", async () => {
+  // WebUSB resolves a failed bulk OUT with a status rather than rejecting, so a
+  // write path that ignores the result reports success on a protocol block that
+  // went nowhere: an upload truncated silently, surfacing later as a read
+  // timeout, with the endpoint left halted for every retry.
+  await expectStalledWriteFails({
+    Port: Ch340SerialPort,
+    fake: makeFakeDevice(),
+    chip: "CH340",
+    endpointNumber: 1,
+  });
+});
+
+test("Ch340SerialPort write path resumes a short bulk OUT transfer", async () => {
+  // bytesWritten can be less than the chunk; assuming a partial write was a
+  // whole one drops the tail of a frame silently.
+  await expectShortWriteResumed({
+    Port: Ch340SerialPort,
+    fake: makeFakeDevice(),
+    endpointNumber: 1,
+  });
+});
+
+test("Ch340SerialPort write path gives up on a transfer that never progresses", async () => {
+  await expectStuckWriteFails({
+    Port: Ch340SerialPort,
+    fake: makeFakeDevice(),
+    chip: "CH340",
+  });
+});
+
+test("Ch340SerialPort.getSignals reads the inverted modem status register", async () => {
+  // The kernel's ch341_get_status(): READ_REG of 0x0706, first byte inverted,
+  // CTS 0x01, DSR 0x02, RI 0x04, DCD 0x08.
+  const { device, controlIn } = makeFakeDevice();
+  let raw = ~(0x01 | 0x04) & 0xff;
+  const answer = device.controlTransferIn;
+  device.controlTransferIn = async (setup, length) => {
+    if (setup.request === 0x95 && setup.value === 0x0706) {
+      controlIn.push({ ...setup, length });
+      return { status: "ok", data: new DataView(new Uint8Array([raw, 0xee]).buffer) };
+    }
+    return answer(setup, length);
+  };
+  const port = new Ch340SerialPort(device);
+  await port.open({ baudRate: 9600 });
+  controlIn.length = 0;
+
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: true,
+    dataSetReady: false,
+    dataCarrierDetect: false,
+    ringIndicator: true,
+  });
+  assert.deepEqual(controlIn, [
+    { requestType: "vendor", recipient: "device", request: 0x95, value: 0x0706, index: 0, length: 2 },
+  ]);
+
+  // The high bits of the register are not modem lines and must not leak in.
+  raw = ~(0x02 | 0x08) & 0x0f;
+  assert.deepEqual(await port.getSignals(), {
+    clearToSend: false,
+    dataSetReady: true,
+    dataCarrierDetect: true,
+    ringIndicator: false,
+  });
+});
+
+test("Ch340SerialPort.getSignals reports a failed register read", async () => {
+  // Clone silicon that rejects register reads cannot report its lines either.
+  const { device } = makeFakeDevice({ readRegStatus: "stall" });
+  const port = new Ch340SerialPort(device);
+  await port.open({ baudRate: 9600 });
+
+  await assert.rejects(port.getSignals(), /CH340 control read 0x95 failed: stall/);
 });

@@ -10,6 +10,7 @@ import {
   detectPl2303Type,
   isProlificDevice,
   pickPl2303BaudRate,
+  pl2303LineCoding,
 } from "../../web/js/pl2303-webusb.ts";
 import { createWebUsbSerial } from "../../web/js/webusb-serial.ts";
 import {
@@ -25,6 +26,11 @@ import {
   expectOnePacketPerTransfer,
   expectStallRecovery,
 } from "../support/usb-read-path.mjs";
+import {
+  expectShortWriteResumed,
+  expectStalledWriteFails,
+  expectStuckWriteFails,
+} from "../support/usb-write-path.mjs";
 
 // Fake USBDevice for a PL2303: interrupt IN + bulk OUT + bulk IN endpoints,
 // records all control transfers, answers GET_DESCRIPTOR and the HX probe.
@@ -124,6 +130,57 @@ test("HX open() runs the legacy startup with kernel-correct request types", asyn
   // Bulk endpoints selected, interrupt endpoint skipped.
   assert.equal(port._inEndpoint, 3);
   assert.equal(port._outEndpoint, 2);
+});
+
+test("pl2303LineCoding lays out the frame as the kernel's pl2303_set_termios does", () => {
+  // LE32 baud, then stop bits (0 = 1, 2 = 2), parity (1 odd, 2 even), data bits.
+  const bytes = (framing) => Array.from(new Uint8Array(pl2303LineCoding(9600, framing).buffer));
+  assert.deepEqual(bytes({ dataBits: 8, parity: "none", stopBits: 1 }), [0x80, 0x25, 0, 0, 0, 0, 8]);
+  assert.deepEqual(bytes({ dataBits: 8, parity: "even", stopBits: 1 }), [0x80, 0x25, 0, 0, 0, 2, 8]);
+  assert.deepEqual(bytes({ dataBits: 7, parity: "even", stopBits: 1 }), [0x80, 0x25, 0, 0, 0, 2, 7]);
+  assert.deepEqual(bytes({ dataBits: 8, parity: "none", stopBits: 2 }), [0x80, 0x25, 0, 0, 2, 0, 8]);
+  assert.deepEqual(bytes({ dataBits: 8, parity: "odd", stopBits: 1 }), [0x80, 0x25, 0, 0, 0, 1, 8]);
+});
+
+for (const [chip, descriptor, hxProbeSucceeds] of [
+  ["HX", HX_DESCRIPTOR, true],
+  ["HXN", HXN_DESCRIPTOR, false],
+]) {
+  for (const [label, options, frameBytes] of [
+    ["8E1", { dataBits: 8, parity: "even", stopBits: 1 }, [0, 2, 8]],
+    ["7E1", { dataBits: 7, parity: "even", stopBits: 1 }, [0, 2, 7]],
+    ["8N2", { dataBits: 8, parity: "none", stopBits: 2 }, [2, 0, 8]],
+  ]) {
+    test(`${chip} open() programs ${label} in the line coding block`, async () => {
+      // Every chip generation takes its frame in the same class request, so
+      // the frame open() is asked for has to be the one written there.
+      const { device, controlOut } = makeFakeDevice({ descriptor, hxProbeSucceeds });
+      const port = new Pl2303SerialPort(device);
+      await port.open({ baudRate: 9600, ...options });
+
+      const setLine = controlOut.filter((t) => t.requestType === "class" && t.request === 0x20);
+      assert.equal(setLine.length, 1);
+      assert.equal(setLine[0].recipient, "interface");
+      assert.deepEqual(setLine[0].data, [0x80, 0x25, 0x00, 0x00, ...frameBytes]);
+    });
+  }
+}
+
+test("Pl2303SerialPort.open() refuses a frame it cannot program before touching the chip", async () => {
+  const { device, controlIn, controlOut } = makeFakeDevice({ descriptor: HX_DESCRIPTOR });
+  const port = new Pl2303SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, dataBits: 6 }),
+    /PL2303: cannot program 6 data bits/,
+  );
+  assert.deepEqual(controlIn, []);
+  assert.deepEqual(controlOut, []);
+});
+
+test("Pl2303SerialPort declares framing, since open() programs it", () => {
+  const { device } = makeFakeDevice({ descriptor: HX_DESCRIPTOR });
+  assert.equal(new Pl2303SerialPort(device).capabilities.framing, true);
 });
 
 test("Pl2303SerialPort.open() reports the actual interface when a bulk endpoint is missing", async () => {
@@ -269,3 +326,74 @@ test("Pl2303SerialPort asks for exactly one packet per bulk IN transfer", async 
     packetSize: 64,
   });
 });
+
+test("Pl2303SerialPort write path reports a stalled bulk OUT instead of losing bytes", async () => {
+  // WebUSB resolves a failed bulk OUT with a status rather than rejecting, so a
+  // write path that ignores the result reports success on a protocol block that
+  // went nowhere: an upload truncated silently, surfacing later as a read
+  // timeout, with the endpoint left halted for every retry.
+  await expectStalledWriteFails({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    chip: "PL2303",
+    endpointNumber: 2,
+  });
+});
+
+test("Pl2303SerialPort write path resumes a short bulk OUT transfer", async () => {
+  // bytesWritten can be less than the chunk; assuming a partial write was a
+  // whole one drops the tail of a frame silently.
+  await expectShortWriteResumed({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    endpointNumber: 2,
+  });
+});
+
+test("Pl2303SerialPort write path gives up on a transfer that never progresses", async () => {
+  await expectStuckWriteFails({
+    Port: Pl2303SerialPort,
+    fake: makeFakeDevice({ descriptor: HX_DESCRIPTOR }),
+    chip: "PL2303",
+  });
+});
+
+for (const [chip, descriptor, hxProbeSucceeds, request, register, bits] of [
+  // usb-serial-for-android's GET_CONTROL_REQUEST / GET_CONTROL_HXN_REQUEST maps.
+  ["HX", HX_DESCRIPTOR, true, 0x01, 0x87, { cts: 0x08, dsr: 0x04, dcd: 0x02, ri: 0x01 }],
+  ["HXN", HXN_DESCRIPTOR, false, 0x81, 0x80, { cts: 0x08, dsr: 0x20, dcd: 0x40, ri: 0x80 }],
+]) {
+  test(`${chip} getSignals reads the active-low control-line register`, async () => {
+    const { device, controlIn } = makeFakeDevice({ descriptor, hxProbeSucceeds });
+    let asserted = bits.cts | bits.ri;
+    const answer = device.controlTransferIn;
+    device.controlTransferIn = async (setup, length) => {
+      if (setup.requestType === "vendor" && setup.value === register) {
+        controlIn.push({ ...setup, length });
+        return { status: "ok", data: new DataView(new Uint8Array([~asserted & 0xff]).buffer) };
+      }
+      return answer(setup, length);
+    };
+    const port = new Pl2303SerialPort(device);
+    await port.open({ baudRate: 9600 });
+    controlIn.length = 0;
+
+    assert.deepEqual(await port.getSignals(), {
+      clearToSend: true,
+      dataSetReady: false,
+      dataCarrierDetect: false,
+      ringIndicator: true,
+    });
+    assert.deepEqual(controlIn, [
+      { requestType: "vendor", recipient: "device", request, value: register, index: 0, length: 1 },
+    ]);
+
+    asserted = bits.dsr | bits.dcd;
+    assert.deepEqual(await port.getSignals(), {
+      clearToSend: false,
+      dataSetReady: true,
+      dataCarrierDetect: true,
+      ringIndicator: false,
+    });
+  });
+}

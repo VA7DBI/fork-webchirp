@@ -6,6 +6,7 @@ import {
   CP210X_VENDOR_ID,
   Cp2102SerialPort,
   cp2102QuantizeBaudRate,
+  cp2102LineControl,
   cp2102RejectionReason,
   cp2102SpeedLimits,
   hasCdcInterface,
@@ -289,6 +290,72 @@ test("Cp2102SerialPort.open() runs the init sequence", async () => {
   assert.ok(port.writable, "writable stream must be set up");
 });
 
+test("cp2102LineControl encodes SET_LINE_CTL as the kernel's cp210x_set_termios does", () => {
+  // Data bits in bits 8-11, parity in 4-7 (0x10 odd, 0x20 even), stop bits in
+  // 0-3 (2 means two).
+  assert.equal(cp2102LineControl({ dataBits: 8, parity: "none", stopBits: 1 }), 0x0800);
+  assert.equal(cp2102LineControl({ dataBits: 8, parity: "even", stopBits: 1 }), 0x0820);
+  assert.equal(cp2102LineControl({ dataBits: 7, parity: "even", stopBits: 1 }), 0x0720);
+  assert.equal(cp2102LineControl({ dataBits: 8, parity: "none", stopBits: 2 }), 0x0802);
+  assert.equal(cp2102LineControl({ dataBits: 8, parity: "odd", stopBits: 1 }), 0x0810);
+});
+
+test("cp2102LineControl holds the CP2101 to 8 data bits and 1 stop bit", () => {
+  // The kernel forces CS8 and clears CSTOPB on this part; parity it keeps.
+  const cp2101 = CP210X_PARTNUM.CP2101;
+  assert.equal(cp2102LineControl({ dataBits: 8, parity: "even", stopBits: 1 }, cp2101), 0x0820);
+  assert.throws(
+    () => cp2102LineControl({ dataBits: 7, parity: "even", stopBits: 1 }, cp2101),
+    /^Error: CP2102: a CP2101 supports only 8 data bits and 1 stop bit \(asked for 7E1\)$/,
+  );
+  assert.throws(
+    () => cp2102LineControl({ dataBits: 8, parity: "none", stopBits: 2 }, cp2101),
+    /asked for 8N2/,
+  );
+  // Every other part takes the whole range.
+  assert.equal(
+    cp2102LineControl({ dataBits: 7, parity: "even", stopBits: 1 }, CP210X_PARTNUM.CP2102),
+    0x0720,
+  );
+});
+
+for (const [label, options, value] of [
+  ["8E1", { dataBits: 8, parity: "even", stopBits: 1 }, 0x0820],
+  ["7E1", { dataBits: 7, parity: "even", stopBits: 1 }, 0x0720],
+  ["8N2", { dataBits: 8, parity: "none", stopBits: 2 }, 0x0802],
+]) {
+  test(`Cp2102SerialPort.open() programs ${label} through SET_LINE_CTL`, async () => {
+    const { device, controlOut } = makeFakeDevice();
+    const port = new Cp2102SerialPort(device);
+    await port.open({ baudRate: 9600, ...options });
+
+    assert.deepEqual(
+      controlOut.filter((call) => call.request === 0x03),
+      [{ recipient: "interface", request: 0x03, value, index: 0, data: null }],
+    );
+  });
+}
+
+test("Cp2102SerialPort.open() refuses a frame a CP2101 cannot carry and hands the device back", async () => {
+  const { device, controlOut } = makeFakeDevice({ partNumber: CP210X_PARTNUM.CP2101 });
+  let released = 0;
+  device.releaseInterface = async () => { released += 1; };
+  const port = new Cp2102SerialPort(device);
+
+  await assert.rejects(
+    port.open({ baudRate: 9600, stopBits: 2 }),
+    /a CP2101 supports only 8 data bits and 1 stop bit \(asked for 8N2\)/,
+  );
+  // The part number is read first; nothing is configured for a frame it
+  // cannot carry, and the claimed interface is given back.
+  assert.deepEqual(controlOut, []);
+  assert.equal(released, 1);
+});
+
+test("Cp2102SerialPort declares framing, since open() programs it", () => {
+  assert.equal(new Cp2102SerialPort(makeFakeDevice().device).capabilities.framing, true);
+});
+
 test("Cp2102SerialPort addresses its control requests to the claimed interface", async () => {
   // Unlike the CH340's device-recipient requests, this family takes vendor
   // requests on the interface with wIndex carrying the interface number. Get
@@ -418,9 +485,8 @@ test("Cp2102SerialPort.setSignals writes only the lines that change", async () =
 });
 
 test("Cp2102SerialPort.getSignals decodes the modem status byte", async () => {
-  // The other three WebUSB drivers cannot read input control lines at all;
-  // this family answers GET_MDMSTS with them, which is what lets the loopback
-  // suite's control-line case run on the WebUSB transport.
+  // This family answers GET_MDMSTS with the input lines, which is what lets
+  // the loopback suite's control-line case run on a CP210x.
   const { device } = makeFakeDevice({ modemStatus: 0x10 | 0x40 });
   const port = new Cp2102SerialPort(device);
   await port.open({ baudRate: 9600 });

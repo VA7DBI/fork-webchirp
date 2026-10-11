@@ -8,9 +8,21 @@
 // speaks vendor control requests on the default endpoint; the bulk IN endpoint
 // carries raw UART payload with no status header (modem status arrives on a
 // separate interrupt endpoint, which this driver does not read).
-import { WebUsbTransport } from "./webusb-transport.ts";
-import type { WebUsbTransportOptions } from "./webusb-transport.ts";
-import type { SerialOpenOptions, SerialSignals, SerialTransport } from "./serial-transport.ts";
+import {
+  WEBUSB_CHIP_CAPABILITIES,
+  WEBUSB_FRAMING_CHIP_CAPABILITIES,
+  WebUsbTransport,
+  framingLabel,
+  resolveChipFraming,
+  writeBulkOut,
+} from "./webusb-transport.ts";
+import type { ChipFraming, WebUsbTransportOptions } from "./webusb-transport.ts";
+import type {
+  SerialOpenOptions,
+  SerialSignals,
+  SerialTransport,
+  SerialTransportCapabilities,
+} from "./serial-transport.ts";
 import { errorFields } from "./error-details.ts";
 
 // The CH340/CH341 family ships under several vendor/product id pairs — WCH's
@@ -38,12 +50,30 @@ const REG_DIVISOR = 0x13;
 const REG_LCR = 0x18;
 const REG_LCR2 = 0x25;
 
-// Line control bits. 8 data bits, no parity, 1 stop bit, RX+TX enabled — the
-// only framing CHIRP uses, matching the FTDI and PL2303 drivers.
+// Line control register bits, from the kernel's ch341.c. Mark/space parity
+// (0x20) and 5/6 data bits exist too, but the serial contract never asks for
+// them.
 const LCR_ENABLE_RX = 0x80;
 const LCR_ENABLE_TX = 0x40;
+const LCR_PAR_EVEN = 0x10;
+const LCR_ENABLE_PAR = 0x08;
+const LCR_STOP_BITS_2 = 0x04;
 const LCR_CS8 = 0x03;
-const LCR_8N1 = LCR_ENABLE_RX | LCR_ENABLE_TX | LCR_CS8;
+const LCR_CS7 = 0x02;
+
+// The first chip version whose framing lives in the LCR pair. Earlier parts
+// kept it in separate registers that neither the kernel nor this driver
+// programs, so on those the line stays at its 8N1 power-on default.
+const LCR_MIN_VERSION = 0x30;
+
+// The register pair the kernel reads the modem status from (ch341_get_status),
+// and the input-line bits of its first byte, which the chip reports inverted.
+const REG_MODEM_STATUS = 0x0706;
+const MSR_CTS = 0x01;
+const MSR_DSR = 0x02;
+const MSR_RI = 0x04;
+const MSR_DCD = 0x08;
+const MSR_ALL = 0x0f;
 
 // Modem control bits, as held in the driver-side MCR shadow.
 const MCR_DTR = 0x20;
@@ -83,6 +113,23 @@ function clockDivisor(ps: number, fact: number): number {
 const MIN_RATES = [0, 1, 2, 3].map(
   (ps) => Math.floor(CLOCK_RATE / (clockDivisor(ps, 1) * 512)),
 );
+
+// The LCR value for a frame, receiver and transmitter enabled, built as the
+// kernel's ch341_set_termios() builds it: 8N1 is 0xc3, 8E1 0xdb, 7E1 0xda,
+// 8N2 0xc7, 8O1 0xcb.
+export function ch340LineControl({ dataBits, parity, stopBits }: ChipFraming): number {
+  let lcr = LCR_ENABLE_RX | LCR_ENABLE_TX | (dataBits === 7 ? LCR_CS7 : LCR_CS8);
+  if (parity !== "none") {
+    lcr |= LCR_ENABLE_PAR;
+    if (parity === "even") {
+      lcr |= LCR_PAR_EVEN;
+    }
+  }
+  if (stopBits === 2) {
+    lcr |= LCR_STOP_BITS_2;
+  }
+  return lcr;
+}
 
 export function isCh340Device(device: Partial<USBDevice> | null | undefined): boolean {
   if (!device) {
@@ -167,12 +214,6 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
   limitedPrescaler: boolean;
   _closed: boolean;
 
-  // This driver programs the line at 8N1 and nothing reads open()'s
-  // dataBits/stopBits/parity: the LCR pair is written LCR_8N1 unconditionally.
-  // It therefore declares capabilities.framing false (WEBUSB_CHIP_CAPABILITIES
-  // in web/js/webusb-transport.ts), so the bridge refuses a framing change
-  // rather than reopening and reporting a success the wire does not have.
-
   // options.usb is the WebUSB loss-event source (navigator.usb by default).
   constructor(device: USBDevice, options: WebUsbTransportOptions = {}) {
     super(device, options);
@@ -193,6 +234,16 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
   // replaces it with what the descriptor actually reports.
   get packetSize() {
     return this._inPacketSize;
+  }
+
+  // Framing is programmable only on the chip versions that keep it in the
+  // LCR pair, and the version is learnt at open(): before that, and on the
+  // older parts, the port declares 8N1 only, so the bridge refuses a framing
+  // change up front instead of reopening into a frame the chip never got.
+  override get capabilities(): Readonly<SerialTransportCapabilities> {
+    return this.version >= LCR_MIN_VERSION
+      ? WEBUSB_FRAMING_CHIP_CAPABILITIES
+      : WEBUSB_CHIP_CAPABILITIES;
   }
 
   async _controlOut(request: number, value: number, index: number): Promise<void> {
@@ -247,7 +298,7 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
     }
   }
 
-  async _setBaudRateAndLineControl(baudRate: number): Promise<void> {
+  async _setBaudRateAndLineControl(baudRate: number, framing: ChipFraming): Promise<void> {
     let value = ch340GetDivisor(baudRate, { limitedPrescaler: this.limitedPrescaler });
     // The CH341A holds data back until a full 32-byte endpoint packet has been
     // received unless bit 7 is set. Chips at version 0x27 and below want the
@@ -258,12 +309,13 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
     await this._controlOut(REQ_WRITE_REG, (REG_DIVISOR << 8) | REG_PRESCALER, value);
 
     // Chips before version 0x30 configured framing through separate registers;
-    // the driver leaves them at their 8N1 power-on defaults. From 0x30 up, the
-    // LCR pair carries framing and LCR2 is always zero.
-    if (this.version < 0x30) {
+    // the driver leaves them at their 8N1 power-on defaults (open() has
+    // already refused any other frame on them). From 0x30 up, the LCR pair
+    // carries framing and LCR2 is always zero.
+    if (this.version < LCR_MIN_VERSION) {
       return;
     }
-    await this._controlOut(REQ_WRITE_REG, (REG_LCR2 << 8) | REG_LCR, LCR_8N1);
+    await this._controlOut(REQ_WRITE_REG, (REG_LCR2 << 8) | REG_LCR, ch340LineControl(framing));
   }
 
   // The chip takes the modem control lines inverted, in wValue.
@@ -274,6 +326,9 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
 
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
+    // Checked before the device is touched: a frame this chip cannot carry
+    // fails here, naming it, rather than half-way through the init sequence.
+    const framing = resolveChipFraming(options, "CH340");
     // close() latches _closed and the read loop exits as soon as it is set;
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
@@ -308,9 +363,19 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
     }
 
     this.version = await this._readVersion();
+    if (this.version < LCR_MIN_VERSION && framingLabel(framing) !== "8N1") {
+      // The bridge never asks this (capabilities say 8N1 only once the version
+      // is known); a direct caller gets the device back and the reason.
+      await this.close();
+      throw new Error(
+        `CH340: chip version 0x${this.version.toString(16)} runs at 8N1 only `
+        + `(asked for ${framingLabel(framing)}): it keeps framing in registers `
+        + "this driver does not program",
+      );
+    }
     await this._controlOut(REQ_SERIAL_INIT, 0, 0);
     this.limitedPrescaler = await this._detectLimitedPrescaler();
-    await this._setBaudRateAndLineControl(baudRate);
+    await this._setBaudRateAndLineControl(baudRate, framing);
     // Start with both control lines deasserted and the shadow in sync, so the
     // first setSignals() call always reflects what the chip is actually doing.
     await this._writeModemControl(0);
@@ -333,6 +398,25 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
       return;
     }
     await this._writeModemControl(lines);
+  }
+
+  // Input control lines, read from register 0x0706 the way the kernel's
+  // ch341_get_status() reads them at open: the chip reports them inverted, so
+  // the byte is complemented before decoding. Polled rather than taken from
+  // the interrupt endpoint (which this driver never reads), so it answers now.
+  // The loopback page's control-line case is what reads it.
+  async getSignals(): Promise<SerialInputSignals> {
+    const data = await this._controlIn(REQ_READ_REG, REG_MODEM_STATUS, 0, 2);
+    if (!data || data.byteLength < 1) {
+      throw new Error("CH340: modem status request returned no data");
+    }
+    const status = ~data.getUint8(0) & MSR_ALL;
+    return {
+      clearToSend: Boolean(status & MSR_CTS),
+      dataSetReady: Boolean(status & MSR_DSR),
+      dataCarrierDetect: Boolean(status & MSR_DCD),
+      ringIndicator: Boolean(status & MSR_RI),
+    };
   }
 
   _setupStreams() {
@@ -425,10 +509,10 @@ export class Ch340SerialPort extends WebUsbTransport implements SerialTransport 
     // suite dropping a packet mid-run on a 16 KB transfer.
     }, new CountQueuingStrategy({ highWaterMark: READ_PIPELINE_DEPTH }));
 
+    // Every byte of each chunk, or an error: a stalled or short bulk OUT
+    // transfer resolves rather than rejects, so it is checked (writeBulkOut).
     this.writable = new WritableStream<Uint8Array<ArrayBuffer>>({
-      write: async (chunk) => {
-        await device.transferOut(outEndpoint, chunk);
-      },
+      write: (chunk) => writeBulkOut(device, outEndpoint, chunk, "CH340"),
     });
   }
 
