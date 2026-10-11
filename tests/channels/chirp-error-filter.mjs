@@ -109,7 +109,7 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
   const notAnImage = runtimeCallError(
     "ImageDetectionError",
     "Unable to detect radio from image: Unknown file format",
-    { causes: [{ type: "ImageDetectFailed", module: "chirp.errors", message: "Unknown file format" }] },
+    { causes: [{ type: "ImageDetectFailed", module: "chirp.errors", message: "Unknown file format", explicit: true }] },
     "load_image_base64",
   );
   assert.ok(isIgnored(notAnImage));
@@ -118,14 +118,14 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
   const driverBroke = runtimeCallError(
     "ImageDetectionError",
     "Unable to detect radio from image: 'NoneType' object is not subscriptable",
-    { causes: [{ type: "TypeError", module: "builtins", message: "'NoneType' object is not subscriptable" }] },
+    { causes: [{ type: "TypeError", module: "builtins", message: "'NoneType' object is not subscriptable", explicit: true }] },
     "load_image_base64",
   );
   assert.equal(isIgnored(driverBroke), false);
 
   // The cause is held to the same exact class-and-module rule as the failure.
   const lookalike = runtimeCallError("RadioError", "Failed to read block", {
-    causes: [{ type: "RadioNoResponse", module: "webchirp_bridge.x", message: "No response" }],
+    causes: [{ type: "RadioNoResponse", module: "webchirp_bridge.x", message: "No response", explicit: true }],
   });
   assert.equal(isIgnored(lookalike), false);
 
@@ -133,11 +133,19 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
   // wrapper's author's to judge.
   const deeper = runtimeCallError("RadioError", "Failed to read block", {
     causes: [
-      { type: "ValueError", module: "builtins", message: "bad length" },
-      { type: "RadioNoResponse", module: "chirp.errors", message: "No response" },
+      { type: "ValueError", module: "builtins", message: "bad length", explicit: true },
+      { type: "RadioNoResponse", module: "chirp.errors", message: "No response", explicit: true },
     ],
   });
   assert.equal(isIgnored(deeper), false);
+
+  // Raised while handling an ignored failure is not raised from it: ga510 reads
+  // the port inside its RadioNoResponse handler, and a serial failure there is
+  // a defect of its own, which Python chains only as __context__.
+  const whileHandling = runtimeCallError("JsException", "NetworkError: The device has been lost.", {
+    causes: [{ type: "RadioNoResponse", module: "chirp.errors", message: "No response", explicit: false }],
+  }, "download_selected_radio");
+  assert.equal(isIgnored(whileHandling), false);
 });
 
 test("a native JS error is never dropped by the runtime rule", () => {

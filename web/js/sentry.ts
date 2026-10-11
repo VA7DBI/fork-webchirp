@@ -159,8 +159,11 @@ export function isNetworkFailure(error: unknown): boolean {
 // format": the user dropped something that is not a radio image) as
 // ImageDetectionError, which the all-drivers retry needs by that name -- so
 // judged by its own class the user's file reached Sentry as a bug. Only the
-// nearest cause counts: what that exception was itself raised from was
-// already the wrapper's author's to judge.
+// nearest cause counts, and only an explicit one (raise ... from): what that
+// exception was itself raised from was already the wrapper's author's to
+// judge, and a failure Python merely recorded as raised while handling an
+// ignored one -- ga510 reading the port inside its RadioNoResponse handler --
+// is a defect of its own.
 //
 // Dropping the events does not drop the signal. This filters events only,
 // while the failure metrics in web/js/ui/metrics.ts carry error_kind,
@@ -183,7 +186,7 @@ export function isIgnoredError(error: unknown): boolean {
   }
   const cause = error.pythonCauses[0];
   return isIgnoredChirpClass(error.pythonType, error.pythonModule)
-    || (cause !== undefined && isIgnoredChirpClass(cause.type, cause.module));
+    || (cause !== undefined && cause.explicit && isIgnoredChirpClass(cause.type, cause.module));
 }
 
 // Whether a Python class, named by class and defining module, is one of the

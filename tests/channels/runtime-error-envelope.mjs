@@ -207,12 +207,28 @@ except _chirp_errors.RadioError as _outer:
 json.dumps(_envelope)
   `);
   assert.equal(envelope.message, "Failed to read block at 0x0040");
-  assert.deepEqual(envelope.causes, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!" }]);
+  assert.deepEqual(envelope.causes, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!", explicit: false }]);
 
   const { unwrapRpcEnvelope } = await import("../../web/js/rpc-dispatch.ts");
   const error = await failure(Promise.resolve().then(() => unwrapRpcEnvelope("download", { ok: false, error: envelope })));
-  assert.deepEqual(error.pythonCauses, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!" }]);
+  assert.deepEqual(error.pythonCauses, [{ type: "RadioError", module: "chirp.errors", message: "Block failed checksum!", explicit: false }]);
   assert.equal(classifyErrorKind(error), "checksum");
+});
+
+test("a file that is not a radio image is wrapped for the retry but not reported", async () => {
+  // load_image_base64 re-raises CHIRP's ImageDetectFailed as ImageDetectionError
+  // with raise ... from, so the cause crosses as explicit and isIgnoredError
+  // judges the failure by it (WEBCHIRP-FRONTEND-1G).
+  const harness = await sharedHarness();
+  const notAnImage = Buffer.from("this is a shopping list, not a radio image\n").toString("base64");
+  const error = await failure(harness.rpc("load_image_base64", { image_b64: notAnImage }));
+
+  assert.ok(isPythonError(error, "ImageDetectionError"));
+  assert.deepEqual(
+    error.pythonCauses.map(({ type, module, explicit }) => ({ type, module, explicit })),
+    [{ type: "ImageDetectFailed", module: "chirp.errors", explicit: true }],
+  );
+  assert.equal(isIgnoredError(error), true);
 });
 
 test("a dismissed port chooser is still classified port_not_selected after crossing Python", async () => {
