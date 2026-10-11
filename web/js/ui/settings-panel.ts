@@ -438,10 +438,16 @@ export function createSettingsPanel(ctx: UiContext) {
     applyValidationIssues,
     invalidCount: () => invalidKeys.size,
     getGroups: () => settingsState.groups,
-    // Replace the settings tree, falling back to the current groups when the
-    // runtime returns nothing (upload/export echo the settings back).
+    // Replace the settings tree with the one upload, export or the preflight
+    // echoed back. An empty reply never replaces a tree the panel holds: the
+    // runtime answers [] when it could not read settings at all (issue 97),
+    // and taking that at face value would drop every setting -- and the
+    // user's edits -- from the next write.
     setGroups(groups: SettingNode[] | null | undefined) {
-      settingsState.groups = cloneGroups(groups || settingsState.groups);
+      if (!groups || (groups.length === 0 && settingsState.groups.length > 0)) {
+        return;
+      }
+      settingsState.groups = cloneGroups(groups);
     },
     // Wholesale replacement after a download or image load, where the settings
     // come from the image rather than a driver probe.

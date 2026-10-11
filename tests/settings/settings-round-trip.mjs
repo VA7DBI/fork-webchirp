@@ -96,7 +96,7 @@ async function reapplySettings(harness, match, raw, settings) {
 _r = _import_radio_class(_m, _c)(memmap.MemoryMapBytes(bytes(
     chirp_common.CloneModeRadio._strip_metadata(base64.b64decode(_b))[0])))
 _res = _validate_and_apply_radio_settings(_r, json.loads(_s), apply_changes=True)
-json.dumps({"valid": _res["valid"], "issues": _res["issues"]})
+json.dumps({"valid": _res["valid"], "issues": _res["issues"], "settings": _res["settings"]})
     `,
     {
       _m: match.module,
@@ -255,6 +255,38 @@ test("an edited value is still written, and one the driver refuses is still repo
   assert.ok(
     result.issues.some((issue) => issue.path.join(".") === enumEntry.path),
     `expected an issue on ${enumEntry.path}, got ${JSON.stringify(result.issues)}`,
+  );
+});
+
+// The reply to a refused edit is the tree the panel redraws, with the refused
+// value marked invalid. It has to carry what the user typed: echoing the
+// radio's old value would show the field as unedited while still marking it
+// invalid, and the user's entry would be gone (issue 97).
+test("a value CHIRP refuses comes back as the user submitted it", async () => {
+  const { harness, catalog } = await context();
+  const { match, loaded, raw } = await loadImageFor(harness, catalog, EDITABLE_IMAGE);
+  const entries = flattenSettings(loaded.settings);
+  const enumEntry = entries.find(
+    (entry) => entry.value.type === "enum" && entry.value.mutable && entry.value.initialized,
+  );
+  const otherEntry = entries.find(
+    (entry) => entry.path !== enumEntry.path && entry.value.initialized,
+  );
+  const broken = JSON.parse(JSON.stringify(loaded.settings));
+  flattenSettings(broken).find((entry) => entry.path === enumEntry.path)
+    .value.current = "webchirp-not-an-option";
+
+  const result = await reapplySettings(harness, match, raw, broken);
+  assert.equal(result.valid, false);
+  const echoed = flattenSettings(result.settings);
+  assert.equal(
+    echoed.find((entry) => entry.path === enumEntry.path).value.current,
+    "webchirp-not-an-option",
+  );
+  // Only the refused value is overridden; the rest still read off the radio.
+  assert.deepEqual(
+    echoed.find((entry) => entry.path === otherEntry.path).value.current,
+    otherEntry.value.current,
   );
 });
 
