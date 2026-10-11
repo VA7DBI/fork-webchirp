@@ -30,7 +30,7 @@ function rowsInOrder(entries, toRecord, nameOf, hooks, options) {
   return { rows, skipped };
 }
 
-// RXF entries ({ qra, mode, qrgRx, qrgTx, ctcssRx, ctcssTx, ... }, MHz) under
+// RXF entries ({ qra, modes, qrgRx, qrgTx, ctcssRx, ctcssTx, ... }, MHz) under
 // the feed's perspective.
 export function rxfRows(entries, hooks, { perspective = "repeater" } = {}) {
   return rowsInOrder(

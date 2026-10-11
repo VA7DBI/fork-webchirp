@@ -18,7 +18,7 @@ import {
   rsgbToRepeaterRecord,
   squaresForRadius,
 } from "../rsgb.ts";
-import { parseRxfRecords } from "../rxf.ts";
+import { parseRxfRecords, rxfPreferredModes } from "../rxf.ts";
 import { withRequestTimeout } from "../request-timeout.ts";
 import { countryDisplayName, flagEmojiFromCountryCode, rememberBounded } from "./format.ts";
 import { trackEvent } from "./analytics.ts";
@@ -488,8 +488,7 @@ export function createRepeaterAdapters(
       // applies below. Several modes go as one comma-joined value, as bands
       // already do: the API reads a single mode parameter, so repeated
       // mode= keys would silently keep only the last one.
-      const modes = normalized(values.modes);
-      url.searchParams.set("mode", (modes.length > 0 ? modes : ["fm"]).join(","));
+      url.searchParams.set("mode", queriedModes(values).join(","));
       if (values.only) {
         url.searchParams.set("onlyworking", "true");
       }
@@ -503,6 +502,15 @@ export function createRepeaterAdapters(
         url.searchParams.set("range", String(rangeKm));
       }
       return url;
+    }
+
+    // The modes a query asks the directory for. A multi-mode RXF record can
+    // carry several (przemienniki.net's FM+DSTAR repeaters), and the row
+    // builder takes this selection as preferredModes, so the row is written
+    // in the mode that was searched for rather than the record's first.
+    function queriedModes(values: QueryValues): string[] {
+      const modes = normalized(values.modes);
+      return modes.length > 0 ? modes : ["fm"];
     }
 
     const previewCache = new Map<string, RemotePreviewBody>();
@@ -527,8 +535,9 @@ export function createRepeaterAdapters(
       // for a 30 km search it would have nothing beyond the ring to dim.
       const key = keyWithoutRange(url);
       const cached = previewCache.get(key);
+      const preferredModes = rxfPreferredModes(queriedModes(values));
       if (cached && cached.rangeKm >= radiusKm * PREVIEW_RANGE_FACTOR) {
-        return { records: cached.records, unusable: cached.unusable };
+        return { records: cached.records, unusable: cached.unusable, preferredModes };
       }
       const text = await withRequestTimeout(`${label} preview`, async (signal) => {
         const response = await fetch(url.toString(), { signal });
@@ -546,7 +555,7 @@ export function createRepeaterAdapters(
         rangeKm: radiusKm * PREVIEW_RANGE_FACTOR,
       };
       rememberBounded(previewCache, key, body, PREVIEW_CACHE_LIMIT);
-      return { records: body.records, unusable: body.unusable };
+      return { records: body.records, unusable: body.unusable, preferredModes };
     }
 
     return {
@@ -645,6 +654,7 @@ export function createRepeaterAdapters(
         return {
           records: parsed.records,
           unusable: parsed.unusable,
+          preferredModes: rxfPreferredModes(queriedModes(values)),
           onImported: (inserted) => {
             // result_count is the point of this event: a query that returns
             // nothing means the filters or the proxy are wrong, and today

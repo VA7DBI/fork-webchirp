@@ -30,7 +30,7 @@ function rowHooks({ powerOptions = ["Low", "High"] } = {}) {
 // One plain 2m repeater, in the shape przemienniki.net/RepeaterBook/IRTS are
 // normalized into before the builder sees them.
 function repeater(overrides = {}) {
-  return { qra: "SR5WA", mode: "fm", qrgRx: 145.0125, qrgTx: 145.6125, ...overrides };
+  return { qra: "SR5WA", modes: ["fm"], qrgRx: 145.0125, qrgTx: 145.6125, ...overrides };
 }
 
 // The matching RSGB record, so both builders are asked the same question.
@@ -103,9 +103,9 @@ test("every przemienniki row the builder emits gets the power write, whatever th
   // The cases above pin how the level resolves on one record. This pins the
   // invariant: no shape of repeater may reach the grid on Low.
   const corpus = [
-    repeater({ qra: "SR1", mode: "fm" }),
-    repeater({ qra: "SR2", mode: "dstar" }),
-    repeater({ qra: "SR3", mode: "dmr" }),
+    repeater({ qra: "SR1", modes: ["fm"] }),
+    repeater({ qra: "SR2", modes: ["dstar"] }),
+    repeater({ qra: "SR3", modes: ["dmr"] }),
     repeater({ qra: "SR4", ctcssTx: 103.5 }),
     repeater({ qra: "SR5", ctcssRx: 88.5, ctcssTx: 88.5 }),
     repeater({ qra: "SR6", qrgTx: 145.0125 }),

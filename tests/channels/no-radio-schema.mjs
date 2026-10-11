@@ -76,7 +76,7 @@ async function tableWithMetadata(columns, rows = [], runtimeApi = null) {
 // input (what the radio transmits) and `ctcssRx` its access tone.
 const SR4X = {
   qra: "SR4X",
-  mode: "fm",
+  modes: ["fm"],
   qrgRx: 145.0,
   qrgTx: 145.6,
   ctcssRx: "88.5",
