@@ -71,7 +71,11 @@ function usablePosition(latitude: unknown, longitude: unknown): { latitude: numb
 export interface RxfEntry {
   id?: string;
   qra: string;
-  mode: string;
+  /**
+   * Every <mode> the entry lists, as published. przemienniki.net writes a
+   * dual-mode repeater as <mode>FM</mode><mode>DSTAR</mode> (jasiek/webchirp#244).
+   */
+  modes: string[];
   qrgRx?: number;
   qrgTx?: number;
   qth?: string;
@@ -92,7 +96,8 @@ export function readRxfEntry(repeaterEl: ParentNode): RxfEntry {
   return {
     id: firstText(repeaterEl, "id"),
     qra: firstText(repeaterEl, "qra"),
-    mode: firstText(repeaterEl, "mode"),
+    modes: Array.from(repeaterEl.querySelectorAll(":scope > mode"), (el) => String(el.textContent || "").trim())
+      .filter(Boolean),
     qrgRx: parseQrgMhz(firstText(repeaterEl, 'qrg[type="rx"]')),
     qrgTx: parseQrgMhz(firstText(repeaterEl, 'qrg[type="tx"]')),
     qth: firstText(repeaterEl, "qth"),
@@ -128,6 +133,22 @@ const RXF_MODES: Readonly<Record<string, RepeaterMode>> = {
   tetra: "TETRA",
   atv: "ATV",
 };
+
+// Map RXF mode spellings (any case) to RepeaterModes, in order and without
+// repeats. Used for an entry's own <mode> list, where a spelling outside the
+// table is `unknown` ("other"), and for a query's mode selection, which the
+// row builder takes as preferredModes so a D-STAR search writes the DV side of
+// an FM+D-STAR repeater; there an unknown spelling (null) is simply dropped.
+export function rxfPreferredModes(spellings: Iterable<string>, unknown: "other" | null = null): RepeaterMode[] {
+  const modes: RepeaterMode[] = [];
+  for (const spelling of spellings) {
+    const mode = RXF_MODES[String(spelling || "").trim().toLowerCase()] ?? unknown;
+    if (mode && !modes.includes(mode)) {
+      modes.push(mode);
+    }
+  }
+  return modes;
+}
 
 // Read an RXF <ctcss> body as a tone. The element is not always a CTCSS
 // frequency: RepeaterBook publishes "CSQ" for carrier squelch, "Restricted"
@@ -166,14 +187,16 @@ export function rxfEntryToRecord(
   if (outputHz === null) {
     return null;
   }
-  const label = String(entry.mode || "").trim().toUpperCase();
+  const labels = (entry.modes || []).map((mode) => String(mode || "").trim().toUpperCase()).filter(Boolean);
   const position = usablePosition(entry.latitude, entry.longitude);
   return {
     name: String(entry.qra || "").trim(),
     outputHz,
     inputHz: inputHz === null || inputHz === outputHz ? null : inputHz,
-    modes: [RXF_MODES[label.toLowerCase()] ?? "other"],
-    modeLabel: label,
+    modes: rxfPreferredModes(labels.length > 0 ? labels : [""], "other"),
+    // RepeaterRecord's contract: the directory's spelling for one mode, ""
+    // for several -- the RSGB parser's rule for its multi-mode records.
+    modeLabel: labels.length === 1 ? labels[0] : "",
     // Tones carry the same perspective as the frequencies, so a repeater that
     // publishes only an access tone (the tone the repeater receives) still
     // reaches the radio as a transmitted tone.
