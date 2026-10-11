@@ -32,6 +32,10 @@ if TYPE_CHECKING:
     SettingsContainer: TypeAlias = (
         chirp_settings.RadioSettings | chirp_settings.RadioSettingGroup
     )
+    # What the user submitted for each value CHIRP refused, keyed by the
+    # value object's id(): the tree is alive for the whole apply-and-serialize
+    # pass, and position or path cannot tell apart duplicate sibling names.
+    RejectedValues: TypeAlias = dict[int, Any]
 
 
 def _settings_unavailable_payload(
@@ -91,9 +95,18 @@ def _setting_issue(path: Sequence[Any], value_index: int, message: Any) -> dict[
     return {"path": _setting_path(path), "valueIndex": int(value_index), "message": str(message)}
 
 
-def _serialize_setting_value(value: chirp_settings.RadioSettingValue) -> dict[str, Any]:
-    """Convert a CHIRP RadioSettingValue into UI-friendly JSON metadata."""
+def _serialize_setting_value(
+    value: chirp_settings.RadioSettingValue, rejected: Optional[RejectedValues] = None
+) -> dict[str, Any]:
+    """Convert a CHIRP RadioSettingValue into UI-friendly JSON metadata.
+
+    rejected maps a value object to what the user submitted for it when CHIRP
+    refused it; that submission is reported as the current value, so the panel
+    shows the user's value marked invalid rather than the old one.
+    """
     current = value.get_value() if value.initialized else None
+    if rejected and id(value) in rejected:
+        current = rejected[id(value)]
     data = {
         "mutable": bool(value.get_mutable()),
         "initialized": bool(value.initialized),
@@ -145,14 +158,16 @@ def _serialize_setting_value(value: chirp_settings.RadioSettingValue) -> dict[st
 
 
 def _serialize_setting_node(
-    node: chirp_settings.RadioSettingGroup, path_parts: list[Any]
+    node: chirp_settings.RadioSettingGroup,
+    path_parts: list[Any],
+    rejected: Optional[RejectedValues] = None,
 ) -> dict[str, Any]:
     """Serialize a CHIRP settings tree node for browser rendering."""
     if isinstance(node, chirp_settings.RadioSetting):
         raw_values = node.value if isinstance(node.value, list) else [node.value]
         values = []
         for value_index, value in enumerate(raw_values):
-            serialized = _serialize_setting_value(value)
+            serialized = _serialize_setting_value(value, rejected)
             serialized["index"] = int(value_index)
             values.append(serialized)
 
@@ -169,7 +184,10 @@ def _serialize_setting_node(
             "values": values,
         }
 
-    children = [_serialize_setting_node(child, path_parts + [node.get_name()]) for child in node]
+    children = [
+        _serialize_setting_node(child, path_parts + [node.get_name()], rejected)
+        for child in node
+    ]
     return {
         "kind": "group",
         "id": str(node.get_name()),
@@ -182,9 +200,10 @@ def _serialize_setting_node(
 
 def _serialize_radio_settings(
     settings_tree: Iterable[chirp_settings.RadioSettingGroup],
+    rejected: Optional[RejectedValues] = None,
 ) -> list[dict[str, Any]]:
     """Serialize the top-level RadioSettings collection."""
-    return [_serialize_setting_node(group, []) for group in settings_tree]
+    return [_serialize_setting_node(group, [], rejected) for group in settings_tree]
 
 
 def _settings_container_children(
@@ -281,8 +300,13 @@ def _apply_serialized_settings(
     payload_children: Optional[Sequence[Any]],
     issues: list[dict[str, Any]],
     prefix: list[str],
+    rejected: RejectedValues,
 ) -> None:
-    """Apply serialized UI settings onto a fresh CHIRP settings tree."""
+    """Apply serialized UI settings onto a fresh CHIRP settings tree.
+
+    A value CHIRP refuses is reported in issues and its submission recorded in
+    rejected, so the reply can echo what the user typed (issue 97).
+    """
     children = payload_children or []
     actual_children = _settings_container_children(actual_container)
     for position, payload in enumerate(children):
@@ -300,7 +324,9 @@ def _apply_serialized_settings(
 
         path = prefix + [child_id]
         if payload.get("kind") == "group":
-            _apply_serialized_settings(actual_child, payload.get("children") or [], issues, path)
+            _apply_serialized_settings(
+                actual_child, payload.get("children") or [], issues, path, rejected
+            )
             continue
 
         if not isinstance(actual_child, chirp_settings.RadioSetting):
@@ -343,6 +369,7 @@ def _apply_serialized_settings(
                 target.set_value(next_value)
             except Exception as exc:
                 issues.append(_setting_issue(path, value_index, exc))
+                rejected[id(target)] = next_value
 
 
 def _settings_child_is_writable(setting: chirp_settings.RadioSettingGroup) -> bool:
@@ -417,9 +444,14 @@ def _validate_and_apply_radio_settings(
 
     settings_tree = radio.get_settings()
     issues = []
-    _apply_serialized_settings(settings_tree, serialized_groups, issues, [])
+    rejected: RejectedValues = {}
+    _apply_serialized_settings(settings_tree, serialized_groups, issues, [], rejected)
     if issues:
-        return {"valid": False, "issues": issues, "settings": _serialize_radio_settings(settings_tree)}
+        return {
+            "valid": False,
+            "issues": issues,
+            "settings": _serialize_radio_settings(settings_tree, rejected),
+        }
     if apply_changes:
         # Prune a copy, not the tree itself: the serialized reply below still
         # has to show the user every setting the radio reported, including the
