@@ -118,9 +118,15 @@ test("classifyErrorKind reads the JS error name under a runtime failure", () => 
   const security = new Error("Permissions policy blocks serial");
   security.name = "SecurityError";
   assert.equal(classifyErrorKind(security), "permission_denied");
-  const dismissed = new Error("No device selected.");
-  dismissed.name = "NotFoundError";
-  assert.equal(classifyErrorKind(dismissed), "port_not_selected");
+  // A dismissed chooser only ever arrives renamed by the bridge, so a raw
+  // NotFoundError is WebUSB's "The device was disconnected.", either way.
+  const gone = new Error("The device was disconnected.");
+  gone.name = "NotFoundError";
+  assert.equal(classifyErrorKind(gone), "serial_disconnect");
+  const goneThroughPython = pythonError("JsException", "NotFoundError: The device was disconnected.", {
+    js: { name: "NotFoundError", message: "The device was disconnected." },
+  });
+  assert.equal(classifyErrorKind(goneThroughPython), "serial_disconnect");
 });
 
 test("errorTypeName reads the exception type from either error shape", () => {

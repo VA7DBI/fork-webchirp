@@ -258,6 +258,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
     call `_losePort()`, never `_teardown()` alone. It reports `onPortLost`
     once, before awaiting the transport's close; that report is the only way
     the UI learns the port is gone.
+  - Show a port chooser only from the click that asks for it, before that
+    handler's first await: Connect calls `BrowserSerialBridge.choosePort()`,
+    and `open()` takes the port it picked. Never make a chooser wait on the
+    runtime call queue.
 
 ## Agent CLI
 - For agent-operated real-radio reads, use `npm run radio:read -- --port <path> --module <driver_module> --class <driver_class> --format json|csv|img --output <file>`.

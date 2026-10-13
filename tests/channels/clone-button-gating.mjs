@@ -75,7 +75,7 @@ test("clone buttons stay disabled until a serial port is connected", async () =>
   const createSerialActions = await loadSerialActions();
   const ctx = makeContext();
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
 
   // Sidebar enabled after init, but no port picked yet.
   serial.setSidebarControlsEnabled(true);
@@ -130,7 +130,7 @@ test("unsupported transports never count as failed connects while adapter failur
     ctx.log.reportActionError = (action, thrown) => errors.push(thrown);
     ctx.state.runtimeApi.serialConnect = async () => { throw error; };
     const serial = createSerialActions(ctx);
-    serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+    serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
     serial.setSidebarControlsEnabled(true);
     serial.bindEvents();
     await pressConnectToggle(ctx);
@@ -145,7 +145,7 @@ test("a connected port does not override the other clone-button blocks", async (
   const createSerialActions = await loadSerialActions();
   const ctx = makeContext({ hasInvalidSettings: true });
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
   await pressConnectToggle(ctx);
@@ -169,7 +169,7 @@ test("losing the port mid-session takes the clone buttons away again", async () 
   const createSerialActions = await loadSerialActions();
   const ctx = makeContext();
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
   await pressConnectToggle(ctx);
@@ -203,7 +203,7 @@ test("a port lost before the connect's result arrives leaves the clone buttons o
     return { connected: true, transport: "webserial", message: "Connected at 9600 baud" };
   };
   serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
 
@@ -228,7 +228,7 @@ test("a port lost to a failed mid-clone settings change says so", async () => {
   const statuses = [];
   ctx.log.setStatus = (message) => statuses.push(message);
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
   await pressConnectToggle(ctx);
@@ -260,7 +260,7 @@ test("a browser without JSPI is refused at connect time with the reason", async 
     return { connected: true, transport: "webserial", message: "ok" };
   };
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setCloneSupported(false);
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
@@ -308,7 +308,7 @@ test("each connected transport leaves exactly its own Disconnect button", async 
     const preferred = [];
     serial.setSerialController({
       capability: { supported: true, native: true, webusb: true, webbluetooth: true },
-      setPreferredTransport(value) { preferred.push(value); },
+      async choosePort(value) { preferred.push(value); },
     });
     serial.setSidebarControlsEnabled(true);
     serial.bindEvents();
@@ -337,7 +337,7 @@ test("WebBluetooth follows selection, startup, busy and JSPI restrictions", asyn
   const serial = createSerialActions(ctx);
   serial.setSerialController({
     capability: { supported: true, native: true, webbluetooth: true },
-    setPreferredTransport() {},
+    async choosePort() {},
   });
   const button = ctx.dom.webbluetoothConnectToggleEl;
   assert.equal(button.disabled, true, "startup blocks BLE too");
@@ -370,13 +370,15 @@ test("WebBluetooth follows selection, startup, busy and JSPI restrictions", asyn
   assert.match(statuses.at(-1), /JSPI/);
 
   serial.setCloneSupported(true);
-  await dispatch(button, "click");
+  // Left pending: the click's connect is held in the runtime until finishConnect.
+  const clicked = dispatch(button, "click");
+  await flushMicrotasks();
   assert.equal(connectCalls, 1);
   assert.equal(button.disabled, true);
   assert.equal(ctx.dom.serialConnectToggleEl.disabled, true);
   assert.equal(ctx.dom.webusbConnectToggleEl.disabled, true);
   finishConnect({ connected: true, transport: "webbluetooth" });
-  await Promise.resolve();
+  await clicked;
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, "Disconnect");
   serial.handlePortLost("BLE dongle");
@@ -426,7 +428,7 @@ async function bootConnectedUi(runtime = {}) {
     validateRadioSettings: async () => ({ valid: true, issues: [], settings: CLONE_SETTINGS }),
     ...runtime,
   }));
-  ui.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  ui.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   await ui.init(true);
   selectRadioBySearch(document, "Acme Clone");
   await flushMicrotasks();

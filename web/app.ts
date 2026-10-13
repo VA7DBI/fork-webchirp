@@ -35,7 +35,7 @@ serialBridge.onPortLost = ({ deviceName, reason } = {}) => ui.onSerialPortLost(d
 const serialCapability = serialBridge.getCapability();
 ui.setSerialController({
   capability: serialCapability,
-  setPreferredTransport: (transport) => serialBridge.setPreferredTransport(transport),
+  choosePort: (transport) => serialBridge.choosePort(transport),
 });
 // Pyodide's run_sync — how CHIRP's blocking clone loops wait on the serial
 // bridge — needs WebAssembly JSPI (stack switching). Nothing else does: the

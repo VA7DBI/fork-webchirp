@@ -116,3 +116,24 @@ export function createPortSelectionCancelledError() {
 export function isPortSelectionCancelled(error: unknown): boolean {
   return jsErrorName(error) === PORT_SELECTION_CANCELLED;
 }
+
+// A chooser the browser refused because the click's user activation (about
+// five seconds in Chrome) had lapsed. A permissions policy refuses with the
+// same SecurityError, so the bridge tells them apart by navigator.userActivation
+// (BrowserSerialBridge._requestPort in web/js/serial.ts) and renames this one,
+// which analytics would otherwise count as a denied permission
+// (WEBCHIRP-FRONTEND-1W).
+export const USER_GESTURE_REQUIRED = "UserGestureRequiredError";
+
+// Rename the browser's refusal, keeping it as the cause and its sentence in
+// the message, since the debug panel prints the message and not the cause.
+export function createUserGestureRequiredError(cause: unknown): Error {
+  const { name, message } = errorFields(cause);
+  const error = new Error(
+    "The browser shows its port chooser only straight after a click, and this one was asked for too late. "
+      + `Press Connect again. (${name}: ${message})`,
+    { cause },
+  );
+  error.name = USER_GESTURE_REQUIRED;
+  return error;
+}

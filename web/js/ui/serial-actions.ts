@@ -62,7 +62,7 @@ const CLONE_FLOW_OUTCOMES: Readonly<Record<string, { flow: string; outcome: stri
 export function createSerialActions(ctx: UiContext) {
   const { dom, state, log, actions } = ctx;
 
-  let transportController: { capability?: typeof capability; setPreferredTransport(transport: string): void } | null = null;
+  let transportController: { capability?: typeof capability; choosePort(transport: string): Promise<void> } | null = null;
   let capability = { supported: false, native: false, webusb: false, webbluetooth: false };
   // Whether this browser can run a clone at all (WebAssembly JSPI). Checked
   // when a connection is started, not at init: the rest of the app works
@@ -100,8 +100,9 @@ export function createSerialActions(ctx: UiContext) {
     return loss;
   }
 
-  // Wire the serial bridge's transport controls (capability + forced transport)
-  // so the UI can offer explicit WebUSB and WebBluetooth connect paths.
+  // Wire the serial bridge's transport controls (capability + the chooser for
+  // a forced transport) so the UI can offer explicit WebUSB and WebBluetooth
+  // connect paths.
   function setSerialController(controller: NonNullable<typeof transportController> | null): void {
     transportController = controller || null;
     capability = controller?.capability || capability;
@@ -130,7 +131,7 @@ export function createSerialActions(ctx: UiContext) {
   // Connect using the requested transport ("auto", "webusb" or "webbluetooth").
   async function connectSerial(preferredTransport: string): Promise<void> {
     // A transfer still running after a port loss holds the toggles: a connect
-    // queued behind it would open its chooser after the click had expired.
+    // would only wait behind it in the runtime queue, saying "Connecting...".
     if (connected || cloneRunning) {
       return;
     }
@@ -139,7 +140,6 @@ export function createSerialActions(ctx: UiContext) {
       log.logSerial(CLONE_UNSUPPORTED_MESSAGE);
       return;
     }
-    transportController?.setPreferredTransport(preferredTransport);
     setSerialButtonsBusy(true);
     connecting = true;
     lossDuringConnect = null;
@@ -149,6 +149,9 @@ export function createSerialActions(ctx: UiContext) {
         ? " via WebBluetooth"
         : (preferredTransport === "webusb" ? " via WebUSB" : "");
       log.setStatus(`Connecting serial${transportLabel}...`);
+      // Before anything here awaits: the chooser needs this click's user
+      // activation, which can lapse while serialConnect waits on the runtime.
+      await transportController?.choosePort(preferredTransport);
       const result = await requireRuntimeApi(state).serialConnect({ baudRate });
       connected = Boolean(result?.connected);
       if (result?.deviceName) {
@@ -734,29 +737,11 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   function bindEvents() {
-    dom.serialConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("auto");
-      }
-    });
-
-    dom.webusbConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("webusb");
-      }
-    });
-
-    dom.webbluetoothConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("webbluetooth");
-      }
-    });
+    // Each toggle returns its promise, which a browser ignores, so a test's
+    // dispatch() can wait for the whole connect.
+    dom.serialConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("auto")));
+    dom.webusbConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("webusb")));
+    dom.webbluetoothConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("webbluetooth")));
 
     dom.radioDownloadEl.addEventListener("click", () => {
       downloadFromRadio();

@@ -15,7 +15,7 @@ test("prefers native Web Serial when available", async (t) => {
   });
 
   assert.deepEqual(bridge.getCapability(), { supported: true, native: true, webusb: true, webbluetooth: false });
-  const serial = await bridge._ensureSerial();
+  const serial = bridge._ensureSerial();
   assert.equal(serial, nativeSerial);
   assert.equal(bridge.transport, "webserial");
 });
@@ -33,7 +33,7 @@ test("falls back to the WebUSB provider when only WebUSB exists", async (t) => {
   });
 
   assert.deepEqual(bridge.getCapability(), { supported: true, native: false, webusb: true, webbluetooth: false });
-  const serial = await bridge._ensureSerial();
+  const serial = bridge._ensureSerial();
   assert.ok(created, "WebUSB provider factory should be invoked");
   assert.equal(serial, webUsbSerial);
   assert.equal(bridge.transport, "webusb");
@@ -48,7 +48,7 @@ test("forcing webusb uses the WebUSB provider even when native serial exists", a
   const bridge = new BrowserSerialBridge({ createWebUsbSerial: () => webUsbSerial });
 
   bridge.setPreferredTransport("webusb");
-  const serial = await bridge._ensureSerial();
+  const serial = bridge._ensureSerial();
   assert.equal(serial, webUsbSerial);
   assert.equal(bridge.transport, "webusb");
 });
@@ -57,7 +57,7 @@ test("forcing webserial fails when native serial is unavailable", async (t) => {
   withNavigator(t, { usb: {} });
   const bridge = new BrowserSerialBridge({ createWebUsbSerial: () => ({ requestPort: async () => ({}) }) });
   bridge.setPreferredTransport("webserial");
-  await assert.rejects(() => bridge._ensureSerial(), /Native Web Serial is not supported/);
+  assert.throws(() => bridge._ensureSerial(), /Native Web Serial is not supported/);
 });
 
 test("a failed open tears down state instead of leaving a half-open port", async (t) => {

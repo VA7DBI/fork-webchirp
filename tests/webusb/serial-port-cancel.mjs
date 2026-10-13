@@ -209,7 +209,7 @@ test("connect reports a dismissed chooser as a cancellation, not a crash", async
   cancelled.name = PORT_SELECTION_CANCELLED;
   const { ctx, calls } = makeSerialActionsContext(cancelled);
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
 
@@ -231,7 +231,7 @@ test("connect still reports a genuine open failure as an error", async () => {
 
   const { ctx, calls } = makeSerialActionsContext(new Error("Failed to open serial port."));
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
 

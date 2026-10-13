@@ -29,7 +29,6 @@ import type {
   SerialTransport,
   SerialTransportCapabilities,
 } from "./serial-transport.ts";
-import { errorFields } from "./error-details.ts";
 
 // Silicon Labs' vendor id. The chooser filters on it vendor-wide, because ~150
 // of the kernel id_table's entries are OEM cables that ship a CP210x under a
@@ -505,11 +504,7 @@ export class Cp2102SerialPort extends WebUsbTransport implements SerialTransport
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
 
-    try {
-      await this.device.open();
-    } catch (error) {
-      throw new Error(`CP2102: could not open USB device: ${errorFields(error).message || error}`);
-    }
+    await this._openDevice("CP2102");
 
     // Past this point the device is owned, so every failure has to give it back
     // before it propagates. Otherwise a rejected open leaves the interface
