@@ -404,6 +404,30 @@ test("every chip driver leaves other claim failures unnamed", async () => {
   }
 });
 
+// An open refused because the device is gone keeps Chromium's NotFoundError,
+// which analytics counts as a disconnect: the adapter was unplugged after the
+// chooser, while the connect waited on the runtime. Any other refusal is a
+// plain Error. Both keep the chip and the browser's sentence.
+test("every chip driver keeps the name only of an open refused for a device that is gone", async () => {
+  for (const chip of CHIP_NAMES) {
+    for (const [refusal, sentence, expectedName] of [
+      ["NotFoundError", "The device was disconnected.", "NotFoundError"],
+      ["SecurityError", "Access denied.", "Error"],
+    ]) {
+      const { port, device } = createChipLoopbackPort(chip, { usb: makeEmitter(), latencyMs: 1 });
+      device.open = async () => {
+        throw new DOMException(sentence, refusal);
+      };
+      await assert.rejects(port.open(OPEN_OPTIONS), (error) => {
+        assert.equal(error.name, expectedName, `${chip} ${refusal}`);
+        assert.ok(error.message.endsWith(`: could not open USB device: ${sentence}`), error.message);
+        assert.equal(error.cause?.name, refusal);
+        return true;
+      });
+    }
+  }
+});
+
 // The declared capabilities, pinned per transport: a change here is a
 // behaviour change for the radios that need framing or control lines, so it
 // has to be made on purpose.

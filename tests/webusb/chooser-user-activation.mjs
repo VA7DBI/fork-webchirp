@@ -159,6 +159,28 @@ test("a dismissed chooser never reaches the runtime", async () => {
   assert.equal(ctx.dom.webusbConnectToggleEl.disabled, false);
 });
 
+test("an adapter unplugged while the connect waits is a disconnect, not a dismissed chooser", async () => {
+  // The port is picked in the click but opened only once the runtime reaches
+  // the connect. WebUSB refuses open() on a device unplugged in between with
+  // NotFoundError, the name a dismissed chooser has before the bridge renames
+  // it; the chip drivers keep it (WebUsbTransport._openDevice).
+  const gone = new Error("CH340: could not open USB device: The device was disconnected.");
+  gone.name = "NotFoundError";
+  const port = makeRecordingPort({ failOpenWhen: () => gone });
+  const { activation, calls, ctx } = await makeConnectPage({ provider: makeProvider([port]) });
+
+  activation.isActive = true;
+  const clicked = dispatch(ctx.dom.webusbConnectToggleEl, "click");
+  activation.isActive = false;
+  await clicked;
+
+  assert.deepEqual(calls.cancelled, []);
+  assert.equal(calls.errors.length, 1);
+  assert.equal(calls.errors[0][0], "Serial connect");
+  assert.equal(classifyErrorKind(calls.errors[0][1]), "serial_disconnect");
+  assert.equal(ctx.dom.webusbConnectToggleEl.textContent, "Connect via WebUSB (wired adapter)");
+});
+
 test("a chooser asked for after the activation lapsed is named for it, not as a denied permission", async (t) => {
   const provider = makeProvider([]);
   withNavigator(t, { usb: {}, userActivation: { isActive: false, hasBeenActive: true } });

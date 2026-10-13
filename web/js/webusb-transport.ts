@@ -187,6 +187,28 @@ export class WebUsbTransport {
     };
   }
 
+  // Open the USB device, the first step of every chip driver's open().
+  // Chromium rejects open() with NotFoundError only when the device is gone
+  // ("The device was disconnected."): unplugged after the chooser, which the
+  // connect's wait in the runtime queue leaves time for. That one keeps its
+  // name, so analytics counts it as a disconnect; anything else is a plain
+  // Error. Both carry the chip and the browser's sentence for the debug panel.
+  /**
+   * @param chip The prefix the driver's own errors carry ("CH340").
+   */
+  async _openDevice(chip: string): Promise<void> {
+    try {
+      await this.device.open();
+    } catch (error) {
+      const { name, message } = errorFields(error);
+      const wrapped = new Error(`${chip}: could not open USB device: ${message || error}`, { cause: error });
+      if (name === "NotFoundError") {
+        wrapped.name = name;
+      }
+      throw wrapped;
+    }
+  }
+
   // The device's active configuration, selecting the first one when none is
   // active yet. Shared by the four chip drivers, which all open this way.
   // WebUSB sets it once selectConfiguration() resolves; a device that still

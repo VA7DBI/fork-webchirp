@@ -22,7 +22,6 @@ import type {
   SerialTransport,
   SerialTransportCapabilities,
 } from "./serial-transport.ts";
-import { errorFields } from "./error-details.ts";
 
 export const PROLIFIC_VENDOR_ID = 0x067b;
 
@@ -329,11 +328,7 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     // reopening the same port object needs it cleared or no byte ever arrives.
     this._closed = false;
 
-    try {
-      await this.device.open();
-    } catch (error) {
-      throw new Error(`PL2303: could not open USB device: ${errorFields(error).message || error}`);
-    }
+    await this._openDevice("PL2303");
     const configuration = await this._activeConfiguration("PL2303");
     const iface = configuration.interfaces[0];
     this._interfaceNumber = iface.interfaceNumber;

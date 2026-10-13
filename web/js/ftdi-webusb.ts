@@ -20,7 +20,6 @@ import type {
   SerialTransport,
   SerialTransportCapabilities,
 } from "./serial-transport.ts";
-import { errorFields } from "./error-details.ts";
 
 export const FTDI_VENDOR_ID = 0x0403;
 
@@ -194,11 +193,7 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     // that never deliver a byte.
     this._closed = false;
 
-    try {
-      await this.device.open();
-    } catch (error) {
-      throw new Error(`FTDI: could not open USB device: ${errorFields(error).message || error}`);
-    }
+    await this._openDevice("FTDI");
     const configuration = await this._activeConfiguration("FTDI");
     const iface = configuration.interfaces[0];
     this._interfaceNumber = iface.interfaceNumber;
