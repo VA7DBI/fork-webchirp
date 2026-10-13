@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createBootstrapCrashReporter,
   createRuntimeBootstrap,
+  describeThrownValue,
   isBootstrapFailure,
   markBootstrapFailure,
 } from "../../web/js/runtime-bootstrap.ts";
@@ -227,6 +228,36 @@ test("the reporter ignores errors that did not come from the bootstrap", () => {
 test("a reportCrash function is required", () => {
   assert.throws(() => createBootstrapCrashReporter(), /requires a reportCrash/);
   assert.throws(() => createBootstrapCrashReporter(null), /requires a reportCrash/);
+});
+
+test("a non-Error thrown during boot is described, not flattened to [object Object]", () => {
+  // WEBCHIRP-FRONTEND-Q and -15 said only "Error: [object Object]".
+  const plain = markBootstrapFailure({ message: "wasm compile failed", code: 7 });
+  assert.equal(isBootstrapFailure(plain), true);
+  assert.equal(plain.message, 'Non-Error thrown: Object {"message":"wasm compile failed","code":7}');
+  assert.doesNotMatch(plain.message, /\[object Object\]/);
+  assert.deepEqual(plain.cause, { message: "wasm compile failed", code: 7 });
+
+  // What a <script> that failed to load rejects with: an Event whose fields
+  // live on the prototype, so they are named rather than serialized.
+  class FakeScript extends EventTarget {
+    tagName = "SCRIPT";
+    src = "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.asm.js";
+  }
+  const script = new FakeScript();
+  let loadError = null;
+  script.addEventListener("error", (event) => {
+    loadError = event;
+  });
+  script.dispatchEvent(new Event("error"));
+  assert.equal(
+    describeThrownValue(loadError),
+    "Non-Error thrown: Event (type error, target SCRIPT https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.asm.js)",
+  );
+
+  // A primitive reads as itself, as before.
+  assert.equal(markBootstrapFailure("boot aborted").message, "boot aborted");
+  assert.equal(describeThrownValue(undefined), "undefined");
 });
 
 test("marking carries the classification onto a rethrown error", () => {

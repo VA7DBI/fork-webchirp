@@ -237,6 +237,31 @@ json.dumps(_envelope)
   assert.deepEqual(envelope.origin, { module: "chirp.directory", function: "get_radio_by_image" });
 });
 
+test("a JS frame spliced into the traceback is not where the failure was raised", async () => {
+  // Pyodide can add a rejected promise's JS stack to the traceback as frames
+  // named after the script URL, with empty globals. WEBCHIRP-FRONTEND-1X took
+  // one of those, the Sentry SDK's wrapper "r", as the origin, and split from
+  // -1Y. Code compiled under that URL and run with empty globals is the same
+  // kind of frame.
+  const harness = await sharedHarness();
+  const envelope = await harness.runPythonJson(`
+from webchirp_bridge.rpc import rpc_error_envelope as _rpc_error_envelope
+def _await_js_probe():
+    exec(compile(
+        "def r():\\n    raise RuntimeError('Port is not connected.')\\nr()",
+        "https://cdn.jsdelivr.net/npm/@sentry/browser@10.73.0/+esm",
+        "exec",
+    ), {})
+try:
+    _await_js_probe()
+except RuntimeError as _exc:
+    _envelope = _rpc_error_envelope(_exc)
+json.dumps(_envelope)
+  `);
+  assert.match(envelope.traceback, /\+esm", line \d+, in r\n/);
+  assert.deepEqual(envelope.origin, { module: "__main__", function: "_await_js_probe" });
+});
+
 test("a file that is not a radio image is wrapped for the retry but not reported", async () => {
   // load_image_base64 re-raises CHIRP's ImageDetectFailed as ImageDetectionError
   // with raise ... from, so the cause crosses as explicit and isIgnoredError

@@ -43,8 +43,12 @@ ui.setSerialController({
 // (Firefox before 152, Safari, Chrome before 137) still boots, edits files and
 // exports images; only the download/upload path is refused, at the point the
 // user starts it, with an explanation instead of a bare traceback.
-const jspiSupported =
-  typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function";
+//
+// WebAssembly itself is checked first because it can be missing outright:
+// Safari's Lockdown Mode removes the global, and reading a property off it
+// threw here, before the UI had initialised (WEBCHIRP-FRONTEND-1S).
+const jspiSupported = typeof WebAssembly !== "undefined"
+  && typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function";
 ui.init(serialCapability.supported, jspiSupported);
 if (serialCapability.webusb && !serialCapability.native) {
   ui.logSerial(

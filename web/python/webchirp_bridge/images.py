@@ -25,7 +25,11 @@ from webchirp_bridge.radio_memories import (
     _read_radio_payload,
 )
 from webchirp_bridge.radio_settings import _validate_and_apply_radio_settings
-from webchirp_bridge.runtime_errors import ImageDetectionError, RuntimeUnsupportedError
+from webchirp_bridge.runtime_errors import (
+    ImageDetectionError,
+    RuntimePreconditionError,
+    RuntimeUnsupportedError,
+)
 from webchirp_bridge.session import (
     ImageOrigin,
     close_session,
@@ -82,9 +86,15 @@ def export_image_base64(
     _ensure_clone_mode_radio(radio_cls)
     origin = session.image_origin
     if not session.has_backing_image:
+        # A driver that declares no image size gives the export nothing to
+        # fabricate, but the user can still supply the bytes: with an image
+        # downloaded or opened, the export works. So this is a step not yet
+        # taken rather than a fault, and is raised as one
+        # (WEBCHIRP-FRONTEND-1P: the UV-5G Mini family declares none).
         if session.memory_size <= 0:
-            raise RuntimeUnsupportedError(
-                "Driver does not expose memory size for offline image export"
+            raise RuntimePreconditionError(
+                "This radio's driver cannot build an image from scratch. "
+                "Download from radio or open an image file first, then export."
             )
         origin = ImageOrigin.SYNTHETIC
 

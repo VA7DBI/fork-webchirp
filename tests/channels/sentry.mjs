@@ -152,14 +152,38 @@ test("other network and serial failures remain reportable", () => {
   assert.equal(isIgnoredError(new TypeError("unexpected value")), false);
 });
 
+test("a browser without WebAssembly reports nothing", () => {
+  // Safari's Lockdown Mode removes the global (WEBCHIRP-FRONTEND-1S): the
+  // runtime cannot boot, so whatever fails next is that, whatever it is called.
+  const bootFailure = new ReferenceError("Can't find variable: WebAssembly");
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "WebAssembly");
+  delete globalThis.WebAssembly;
+  try {
+    assert.equal(isIgnoredError(bootFailure), true);
+    assert.equal(isIgnoredError(new Error("Initialization failed")), true);
+  } finally {
+    Object.defineProperty(globalThis, "WebAssembly", saved);
+  }
+  // With WebAssembly present the same ReferenceError is a bug like any other.
+  assert.equal(isIgnoredError(bootFailure), false);
+});
+
 test("only browser noise is left to message patterns", () => {
   assert.deepEqual(initOptions().ignoreErrors.map(String), [
     "/ResizeObserver loop/i",
     "/Invalid call to runtime\\.sendMessage\\(\\)/",
+    "/Object Not Found Matching Id:\\d+, MethodName:\\w+, ParamCount:\\d+$/",
   ]);
-  const [, extension] = initOptions().ignoreErrors;
+  const [, extension, linkScanner] = initOptions().ignoreErrors;
   assert.ok(extension instanceof RegExp);
   assert.ok(extension.test("Invalid call to runtime.sendMessage(). Tab not found."));
+  // Matched against the value the SDK builds for a non-Error rejection, which
+  // is what WEBCHIRP-FRONTEND-1T was titled.
+  assert.ok(linkScanner instanceof RegExp);
+  assert.ok(linkScanner.test(
+    "Non-Error promise rejection captured with value: Object Not Found Matching Id:6, MethodName:update, ParamCount:4",
+  ));
+  assert.equal(linkScanner.test("Object Not Found"), false);
 });
 
 test("scripts that are not this app's are denied by origin", () => {

@@ -68,6 +68,31 @@ test("an upload with nothing downloaded raises the precondition error, and Sentr
   assert.ok(isIgnored(error), "the failure should be filtered out of Sentry");
 });
 
+test("an image export with nothing to start from raises the precondition error, and Sentry drops it", async () => {
+  // The UV-5G Mini declares no image size, so with nothing downloaded or
+  // opened there are no bytes to export from; the user's next step fixes that
+  // (WEBCHIRP-FRONTEND-1P). A fresh session is that state.
+  const harness = await sharedHarness();
+  await ensureModule(harness, "baofeng_uv17Pro");
+  const { sessionId } = await harness.rpc("open_session", {
+    module_name: "baofeng_uv17Pro",
+    class_name: "UV5GMini",
+  });
+
+  const error = await harness
+    .rpc("export_image_base64", { session_id: sessionId, rows: [], settings_groups: [] })
+    .then(
+      () => null,
+      (thrown) => thrown,
+    );
+  await harness.rpc("close_session", { session_id: sessionId });
+
+  assert.ok(error, "an export with no image and no declared size should have failed");
+  assert.ok(isPythonError(error, "RuntimePreconditionError"));
+  assert.match(error.message, /Download from radio or open an image file first/);
+  assert.ok(isIgnored(error), "the failure should be filtered out of Sentry");
+});
+
 test("an ordinary radio failure is still reported", () => {
   // The same shape of failure, raised by the error class that means something
   // went wrong. A filter that swallowed this too would be worse than none.
