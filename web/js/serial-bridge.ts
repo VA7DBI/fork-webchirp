@@ -857,9 +857,22 @@ export class SerialBridge {
         break;
       }
     }
+    // Teardown and a reopen both stop holding the reader before they cancel
+    // it, so a loop whose port and reader are still the held ones was ended
+    // by the port, not by the bridge.
+    const stoppedUnasked = this.port === port && this.reader === reader;
     // Surface loop death loudly; a disconnect is expected, an error is not.
     this._debug(`Serial read loop ended: ${endReason}`);
     this._resolveReadWaiters(false);
+    if (stoppedUnasked) {
+      // Nothing reads this port again, yet it stayed held and the UI kept
+      // offering a clone that could only time out ("radio did not respond").
+      // Not awaited: the teardown waits for this very loop to return.
+      void this._losePort({
+        deviceName: this.lastDeviceName,
+        reason: PORT_LOST_REASONS.READ_STOPPED,
+      });
+    }
   }
 
   _waitForReadEvent(timeoutMs: number): Promise<boolean> {

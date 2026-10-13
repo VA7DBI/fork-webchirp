@@ -185,3 +185,53 @@ test("a call after an intentional close is refused without reporting a loss", as
 
   assert.equal(lost.length, 0);
 });
+
+// A read loop that dies on its own -- the device stopped feeding the stream,
+// as after a sleep -- used to leave the port held and deaf: the next clone
+// timed out as "radio did not respond" while the UI offered it as connected.
+test("a read error on the held port ends the session and is reported", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+  const debug = [];
+  bridge.onDebug = (message) => debug.push(message);
+
+  port.failRead(new Error("The device has been lost."));
+  await tick();
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "read-stopped" }]);
+  assert.equal(bridge.port, null);
+  assert.equal(port.closed, true);
+  assert.ok(debug.includes("Serial read loop ended: read error: The device has been lost."));
+  // The transport's own report of the same loss, arriving after, is not a second one.
+  port.unplug();
+  await tick();
+  assert.equal(lost.length, 1);
+});
+
+test("a stream that ends while the port is still held is a loss too", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+
+  // The transport closing under the bridge, which never asked it to.
+  await port.close();
+  await tick();
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "read-stopped" }]);
+  assert.equal(bridge.port, null);
+});
+
+// The bridge ends its own read loops on every reopen and teardown; none of
+// those is the port stopping.
+test("ending the read loop itself is never reported as a loss", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+
+  await bridge.applyBaudRate(57600);
+  await bridge.reconfigure({ parity: "even" });
+  await bridge.close();
+  await tick();
+
+  assert.equal(lost.length, 0);
+});
