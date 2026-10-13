@@ -2,13 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { installIndexPage, pageElement } from "../support/index-page.mjs";
-import { dispatch } from "../support/ui-interactions.mjs";
+import {
+  createDeferred,
+  dispatch,
+  flushMicrotasks,
+  selectRadioBySearch,
+} from "../support/ui-interactions.mjs";
 import { makeWindow } from "../support/fake-window.mjs";
+import { withRadioSessions } from "../support/fake-runtime-api.mjs";
 import { initSentry, resetSentryForTests } from "../../web/js/sentry.ts";
 import { createSerialUnsupportedError } from "../../web/js/serial-errors.ts";
 
 // The clone buttons must stay dead until a serial port has actually been
 // opened: pressing Download with no port only ever produced a runtime error.
+// They must also stay dead while a transfer runs: every runtime call waits
+// its turn in one queue, so a second press only lined up another transfer
+// behind the first.
 
 // Presses the connect toggle and waits for its click handler to finish.
 function pressConnectToggle(ctx) {
@@ -320,4 +329,187 @@ test("WebBluetooth follows selection, startup, busy and JSPI restrictions", asyn
   assert.equal(button.textContent, "Connect via WebBluetooth");
   assert.equal(ctx.dom.radioDownloadEl.disabled, true);
   assert.equal(ctx.dom.serialConnectToggleEl.hidden, false);
+});
+
+const CLONE_RUNNING_TITLE = "A radio transfer is already running";
+const CLONE_CATALOG = [{
+  vendor: "Acme", model: "Clone", variant: "",
+  module: "acme", className: "Radio", key: "acme:Radio", isLiveRadio: false,
+}];
+const CLONE_HEADERS = ["Location", "Name"];
+// One radio-wide setting, so the radio has a settings summary: the upload
+// preflight repaints it, and repainting it re-runs updateSerialActionState()
+// in the middle of the transfer.
+const CLONE_SETTINGS = [{
+  kind: "group", id: "basic", label: "Basic", path: ["basic"],
+  children: [{
+    kind: "setting", id: "beep", label: "Beep", path: ["basic", "beep"],
+    doc: null, volatile: false, warning: null,
+    values: [{ type: "string", current: "On", mutable: true, index: 0 }],
+  }],
+}];
+
+// Boots the whole UI on index.html with a radio selected and a port connected
+// through the WebSerial toggle, so a transfer runs through the same modules
+// (settings summary, radio session, debug log) it does in the app. runtime
+// overrides the stubbed runtime methods; returns the controller and the three
+// serial controls a user presses.
+async function bootConnectedUi(runtime = {}) {
+  const { document } = installIndexPage();
+  const { createUiController } = await import("../../web/js/ui.ts");
+  const ui = createUiController();
+  ui.setRuntimeApi(withRadioSessions({
+    listRadios: async () => ({ radios: CLONE_CATALOG }),
+    getRuntimeInfo: async () => ({ chirpRevision: "test-revision" }),
+    getDefaultSchema: async () => ({ headers: CLONE_HEADERS, columns: {} }),
+    getRadioMetadata: async () => ({ headers: CLONE_HEADERS, columns: {} }),
+    getRadioSettings: async () => ({
+      supported: true, available: true, requiresImage: false, message: "", groups: CLONE_SETTINGS,
+    }),
+    serialConnect: async () => ({ connected: true, transport: "webserial", message: "ok" }),
+    serialDisconnect: async () => ({ connected: false, message: "bye" }),
+    validateRowsForUpload: async () => ({ valid: true, issues: [], warnings: [] }),
+    validateRadioSettings: async () => ({ valid: true, issues: [], settings: CLONE_SETTINGS }),
+    ...runtime,
+  }));
+  ui.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  await ui.init(true);
+  selectRadioBySearch(document, "Acme Clone");
+  await flushMicrotasks();
+  const controls = {
+    connect: pageElement("serialConnectToggleEl"),
+    download: pageElement("radioDownloadEl"),
+    upload: pageElement("radioUploadEl"),
+  };
+  await dispatch(controls.connect, "click");
+  return { ui, controls };
+}
+
+test("a running download holds every serial control until it ends", async () => {
+  const transfer = createDeferred();
+  const calls = [];
+  const { controls } = await bootConnectedUi({
+    downloadSelectedRadio: () => {
+      calls.push("download");
+      return transfer.promise;
+    },
+    uploadSelectedRadio: async () => {
+      calls.push("upload");
+      return { settings: CLONE_SETTINGS };
+    },
+    serialDisconnect: async () => {
+      calls.push("disconnect");
+      return { connected: false, message: "bye" };
+    },
+  });
+  assert.equal(controls.download.disabled, false);
+
+  await dispatch(controls.download, "click");
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["download"]);
+  for (const control of Object.values(controls)) {
+    assert.equal(control.disabled, true, `#${control.id} must wait for the transfer`);
+    assert.equal(control.title, CLONE_RUNNING_TITLE, `#${control.id} must say why`);
+  }
+
+  // Pressing anything again while the first transfer runs -- Download, Upload
+  // or the toggle, which reads Disconnect -- must not queue a call behind it.
+  await dispatch(controls.download, "click");
+  await dispatch(controls.upload, "click");
+  await dispatch(controls.connect, "click");
+  await flushMicrotasks();
+  assert.deepEqual(calls, ["download"]);
+
+  transfer.resolve({ headers: CLONE_HEADERS, rows: [{ Location: "1", Name: "ONE" }], settings: CLONE_SETTINGS });
+  await flushMicrotasks();
+  for (const control of Object.values(controls)) {
+    assert.equal(control.disabled, false, `#${control.id} must come back`);
+    assert.equal(control.title, "", `#${control.id} must drop the busy title`);
+  }
+  assert.equal(controls.connect.textContent, "Disconnect");
+});
+
+// WEBCHIRP-FRONTEND-1W: an Android user pressed Upload three times while the
+// earlier writes were still timing out, and each press queued another one.
+test("repeated Upload presses start and report one write, and its failure frees the controls", async (t) => {
+  resetSentryForTests();
+  t.after(resetSentryForTests);
+  const metrics = [];
+  await initSentry(makeWindow(), { loadSdk: async () => ({
+    init() {},
+    withScope() {},
+    captureException() {},
+    metrics: {
+      count: (name, value, options) => metrics.push({ name, ...options }),
+      distribution() {},
+    },
+  }) });
+  const transfer = createDeferred();
+  let uploads = 0;
+  const { controls } = await bootConnectedUi({
+    uploadSelectedRadio: () => {
+      uploads += 1;
+      return transfer.promise;
+    },
+  });
+
+  for (let press = 0; press < 3; press += 1) {
+    await dispatch(controls.upload, "click");
+    await flushMicrotasks();
+  }
+  assert.equal(uploads, 1);
+  // The preflight repainted the settings summary, which re-ran
+  // updateSerialActionState() mid-transfer; the hold has to survive that.
+  assert.equal(controls.upload.disabled, true);
+  assert.equal(controls.upload.title, CLONE_RUNNING_TITLE);
+  assert.equal(controls.download.disabled, true);
+
+  transfer.reject(new Error("Radio did not respond"));
+  await flushMicrotasks();
+  for (const control of Object.values(controls)) {
+    assert.equal(control.disabled, false, `#${control.id} must come back after a failure`);
+  }
+  // One transfer, one outcome: the presses that were refused report nothing.
+  const outcomes = metrics
+    .filter((metric) => metric.name === "flow.completed" && metric.attributes.flow === "radio_upload")
+    .map((metric) => metric.attributes.outcome);
+  assert.deepEqual(outcomes, ["failed"]);
+});
+
+test("a port lost mid-transfer shows at once, and Connect returns when the transfer fails", async () => {
+  const transfer = createDeferred();
+  let connects = 0;
+  const { ui, controls } = await bootConnectedUi({
+    serialConnect: async () => {
+      connects += 1;
+      return { connected: true, transport: "webserial", message: "ok" };
+    },
+    downloadSelectedRadio: () => transfer.promise,
+  });
+  assert.equal(connects, 1);
+  await dispatch(controls.download, "click");
+  await flushMicrotasks();
+
+  // The connection is gone the moment the bridge says so...
+  ui.onSerialPortLost("USB VID:PID 0x0403:0x6015");
+  assert.equal(controls.connect.textContent, "Connect via WebSerial");
+  assert.equal(controls.download.disabled, true);
+  assert.equal(controls.upload.disabled, true);
+  // ...but a Connect pressed now would wait behind the dying transfer and
+  // open the port chooser after the click that asked for it had expired.
+  assert.equal(controls.connect.disabled, true);
+  assert.equal(controls.connect.title, CLONE_RUNNING_TITLE);
+  await dispatch(controls.connect, "click");
+  assert.equal(connects, 1);
+
+  // The bridge fails the transfer's next read on the closed port.
+  transfer.reject(new Error("Port is not connected."));
+  await flushMicrotasks();
+  assert.equal(controls.connect.disabled, false);
+  assert.equal(controls.download.disabled, true);
+  assert.equal(controls.download.title, "Connect to a serial port first");
+
+  await dispatch(controls.connect, "click");
+  assert.equal(connects, 2);
+  assert.equal(controls.download.disabled, false);
 });
