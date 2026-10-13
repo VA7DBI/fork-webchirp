@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FtdiSerialPort, ftdiDataValue } from "../../web/js/ftdi-webusb.ts";
+import {
+  FtdiSerialPort,
+  ftdiBaudFamily,
+  ftdiConvertBaudrate,
+  ftdiDataValue,
+} from "../../web/js/ftdi-webusb.ts";
 import { makeFakeUsbDevice, okTransfer } from "../support/fake-usb.mjs";
 import { tick } from "../support/globals.mjs";
 import {
@@ -16,7 +21,8 @@ import {
 
 // A fake FTDI USBDevice: a bulk pair (plus whatever endpoints the test adds),
 // recording every control write, with bulk IN packets framed the way this
-// chip frames them.
+// chip frames them. deviceVersion is bcdDevice, which names the chip; left
+// out, the device reports none, as the fakes did before the driver read it.
 function makeFakeDevice({
   cancelOnClearHalt = false,
   endpoints = [
@@ -24,6 +30,8 @@ function makeFakeDevice({
     { type: "bulk", direction: "out", endpointNumber: 2, packetSize: 64 },
   ],
   interfaceNumber = 0,
+  deviceVersion = undefined,
+  serialNumber = null,
 } = {}) {
   const controlCalls = [];
   const transferOutCalls = [];
@@ -42,6 +50,14 @@ function makeFakeDevice({
       return { status: "ok" };
     },
   });
+  if (deviceVersion !== undefined) {
+    // Split the way Chromium splits bcdDevice: the whole high byte, then a
+    // nibble each.
+    fake.device.deviceVersionMajor = deviceVersion >> 8;
+    fake.device.deviceVersionMinor = (deviceVersion >> 4) & 0x0f;
+    fake.device.deviceVersionSubminor = deviceVersion & 0x0f;
+  }
+  fake.device.serialNumber = serialNumber;
   // A bulk IN packet as this chip actually sends it: two modem/line status
   // bytes, then whatever payload the wire delivered.
   const deliverPacket = (payload = []) => {
@@ -70,6 +86,73 @@ test("FtdiSerialPort.open() purges FIFOs and sets the latency timer", async () =
   assert.ok(port.readable, "readable stream must be set up");
   assert.ok(port.writable, "writable stream must be set up");
 });
+
+test("ftdiConvertBaudrate gives hi-speed parts the 120 MHz divisor, with bit 16 in wIndex bit 8", () => {
+  // The kernel's ftdi_2232h_baud_base_to_divisor() derives every one of these
+  // words independently. The wIndex low byte is port A; bit 9 (0x0200) is the
+  // 120 MHz / 10 clock switch, bit 8 the divisor's 17th bit.
+  assert.deepEqual(ftdiConvertBaudrate(9600, "h"), { value: 0x04e2, index: 0x0201 });
+  assert.deepEqual(ftdiConvertBaudrate(115200, "h"), { value: 0xc068, index: 0x0201 });
+  assert.deepEqual(ftdiConvertBaudrate(14400, "h"), { value: 0x0341, index: 0x0301 });
+  assert.deepEqual(ftdiConvertBaudrate(57600, "h"), { value: 0x00d0, index: 0x0301 });
+  assert.deepEqual(ftdiConvertBaudrate(12000000, "h"), { value: 0x0000, index: 0x0201 });
+  // Below 733 baud the 14-bit divisor cannot reach the rate from 12 MHz, so
+  // libftdi falls back to 48 MHz / 16, still addressed to port A.
+  assert.deepEqual(ftdiConvertBaudrate(300, "h"), { value: 0x2710, index: 0x0001 });
+  assert.deepEqual(ftdiConvertBaudrate(732, "h"), { value: 0x1002, index: 0x0101 });
+});
+
+test("ftdiConvertBaudrate keeps the FT8U232AM to the four fractions it has", () => {
+  // 14400 baud is a divisor of 1666 2/3. The BM family rounds it to 1666 3/8,
+  // a fraction carried in the 17th bit; the AM has neither, and lands on
+  // 1666 1/4 (code 2 at bits 14-15), the nearer of the two it can do.
+  assert.deepEqual(ftdiConvertBaudrate(14400, "bm"), { value: 0x00d0, index: 0x0001 });
+  assert.deepEqual(ftdiConvertBaudrate(14400, "am"), { value: 0x80d0, index: 0x0000 });
+  // Where the BM needs no extra fraction the two agree.
+  assert.deepEqual(ftdiConvertBaudrate(9600, "am"), ftdiConvertBaudrate(9600, "bm"));
+  assert.deepEqual(ftdiConvertBaudrate(3000000, "am"), { value: 0x0000, index: 0x0000 });
+});
+
+test("ftdiBaudFamily reads the chip from bcdDevice as libftdi does", () => {
+  const family = (deviceVersion, serialNumber = null) => ftdiBaudFamily(
+    makeFakeDevice({ deviceVersion, serialNumber }).device,
+  );
+  assert.equal(family(0x0700), "h", "FT2232H");
+  assert.equal(family(0x0800), "h", "FT4232H");
+  assert.equal(family(0x0900), "h", "FT232H");
+  assert.equal(family(0x3300), "h", "FT232HP, from the kernel's table");
+  assert.equal(family(0x0600), "bm", "FT232R");
+  assert.equal(family(0x1000), "bm", "FT-X: Chromium reports major 0x10, not BCD 10");
+  assert.equal(family(0x0400), "bm", "FT232BM");
+  assert.equal(family(0x0500), "bm", "FT2232C");
+  assert.equal(family(0x0200, "A1B2C3"), "am", "FT8U232AM");
+  // An FT232BM with no serial number reports 0x0200 as well.
+  assert.equal(family(0x0200), "bm");
+  assert.equal(family(0x0200, ""), "bm");
+  // Unknown parts, and a device reporting no version, keep the FT232R divisor.
+  assert.equal(family(0x0701), "bm");
+  assert.equal(family(undefined), "bm");
+});
+
+for (const [label, deviceVersion, serialNumber, baud] of [
+  ["FT232R", 0x0600, null, { value: 0x4138, index: 0x0000 }],
+  ["FT232H", 0x0900, null, { value: 0x04e2, index: 0x0201 }],
+  ["FT2232H", 0x0700, "FT4Z1", { value: 0x04e2, index: 0x0201 }],
+]) {
+  test(`FtdiSerialPort.open() programs the ${label} baud divisor`, async () => {
+    // A hi-speed part reads the port from the wIndex low byte and divisor bit
+    // 16 from bit 8. The FT232R layout sent it port 0, and at a rate needing
+    // bit 16 put that bit where the port goes and lost it.
+    const { device, controlCalls } = makeFakeDevice({ deviceVersion, serialNumber });
+    const port = new FtdiSerialPort(device);
+    await port.open({ baudRate: 9600 });
+
+    assert.deepEqual(
+      controlCalls.filter((call) => call.request === 0x03),
+      [{ request: 0x03, ...baud }],
+    );
+  });
+}
 
 test("ftdiDataValue encodes SIO_SET_DATA as the kernel's ftdi_set_termios does", () => {
   // Data bits in the low byte, parity at bits 8-10 (1 odd, 2 even), stop bits
