@@ -136,12 +136,23 @@ export function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError && NETWORK_FAILURE_MESSAGE.test(error.message);
 }
 
+// Whether this browser has no WebAssembly at all. Pyodide is WebAssembly, so
+// without it the runtime cannot boot and every failure that follows is that
+// one circumstance: Safari's Lockdown Mode removes the global, and so can
+// enterprise policy (WEBCHIRP-FRONTEND-1S). A property of the browser rather
+// than of any one error, read live so a test can take it away.
+function webAssemblyMissing(): boolean {
+  return typeof globalThis.WebAssembly === "undefined";
+}
+
 // Whether a failure is one this app never reports: a browser without the serial
 // API, a port native Web Serial would not open, a USB interface another driver
 // holds (all three named in web/js/serial-errors.ts), the network failing a
 // fetch, the host answering with an outage status (web/js/http-errors.ts),
 // the runtime's own "you have not done X yet" guard, or a CHIRP error
-// from the list above. None is a bug in this app or in CHIRP. Read off the
+// from the list above -- or anything at all in a browser without WebAssembly,
+// which cannot run the runtime and so has nothing to report that is not that.
+// None is a bug in this app or in CHIRP. Read off the
 // RuntimeCallError the dispatcher throws (web/js/runtime-errors.ts), which
 // beforeSend receives as the hint's originalException -- for a capture from the one funnel and for an
 // unhandled rejection through the SDK's global handlers alike.
@@ -179,7 +190,8 @@ export function isNetworkFailure(error: unknown): boolean {
 // the classes filtered here. The debug panel still prints the whole traceback.
 export function isIgnoredError(error: unknown): boolean {
   if (
-    isSerialUnsupported(error)
+    webAssemblyMissing()
+    || isSerialUnsupported(error)
     || isSerialPortOpenFailed(error)
     || isUsbInterfaceBusy(error)
     || isNetworkFailure(error)

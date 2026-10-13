@@ -152,6 +152,22 @@ test("other network and serial failures remain reportable", () => {
   assert.equal(isIgnoredError(new TypeError("unexpected value")), false);
 });
 
+test("a browser without WebAssembly reports nothing", () => {
+  // Safari's Lockdown Mode removes the global (WEBCHIRP-FRONTEND-1S): the
+  // runtime cannot boot, so whatever fails next is that, whatever it is called.
+  const bootFailure = new ReferenceError("Can't find variable: WebAssembly");
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "WebAssembly");
+  delete globalThis.WebAssembly;
+  try {
+    assert.equal(isIgnoredError(bootFailure), true);
+    assert.equal(isIgnoredError(new Error("Initialization failed")), true);
+  } finally {
+    Object.defineProperty(globalThis, "WebAssembly", saved);
+  }
+  // With WebAssembly present the same ReferenceError is a bug like any other.
+  assert.equal(isIgnoredError(bootFailure), false);
+});
+
 test("only browser noise is left to message patterns", () => {
   assert.deepEqual(initOptions().ignoreErrors.map(String), [
     "/ResizeObserver loop/i",
