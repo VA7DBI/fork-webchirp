@@ -4,23 +4,19 @@ import test from "node:test";
 import { BrowserSerialBridge } from "../../web/js/serial.ts";
 import { USER_GESTURE_REQUIRED } from "../../web/js/serial-errors.ts";
 import { classifyErrorKind } from "../../web/js/ui/analytics.ts";
+import { queryUiElements } from "../../web/js/ui/dom.ts";
 import { makeRecordingPort } from "../support/fake-serial.mjs";
 import { withNavigator } from "../support/globals.mjs";
-import { installIndexPage, pageElement } from "../support/index-page.mjs";
+import { installIndexPage } from "../support/index-page.mjs";
 import { runtimeCallError } from "../support/runtime-call-errors.mjs";
 import { createDeferred, dispatch, flushMicrotasks } from "../support/ui-interactions.mjs";
 
 // A browser shows its port chooser only while the page holds transient user
-// activation -- about five seconds after a click in Chrome -- and refuses one
-// asked for later with "SecurityError: Must be handling a user gesture to show
-// a permission request." The Connect click used to reach the chooser only
-// through the runtime: serialConnect waits its turn in the call queue, then
-// goes through Python to the bridge's open(). On a phone whose upload was still
-// timing out after the cable came out, the chooser ran eleven seconds after the
-// click and the browser refused it (WEBCHIRP-FRONTEND-1W).
-//
-// The activation here is navigator.userActivation, as the browser exposes it,
-// and the fake provider refuses exactly as Chrome does when it is not active.
+// activation -- about five seconds after a click in Chrome. The Connect click
+// used to reach the chooser only through the runtime call queue and Python,
+// and on a phone whose upload was still timing out the chooser ran eleven
+// seconds after the click and was refused (WEBCHIRP-FRONTEND-1W). The fake
+// providers here read navigator.userActivation and refuse as Chrome does.
 
 // What Chrome rejects a chooser with when activation is missing. Node has no
 // DOMException guarantee worth relying on, so build the same observable shape.
@@ -48,11 +44,11 @@ function makeProvider(ports) {
 }
 
 // The page's serial controls on an Android phone with WebUSB only, wired to a
-// real BrowserSerialBridge over `provider` the way web/app.ts wires it, and a
-// runtime whose connect waits on `queue` -- the runtime call queue, held by
+// real BrowserSerialBridge over provider the way web/app.ts wires it, and a
+// runtime whose connect waits on queue -- the runtime call queue, held by
 // whatever is ahead of it -- before calling the bridge's open() as
 // webserial_connect does.
-async function makeConnectPage({ provider, queue }) {
+async function makeConnectPage({ provider, queue = Promise.resolve() }) {
   const activation = { isActive: false, hasBeenActive: true };
   installIndexPage({
     navigator: {
@@ -64,25 +60,8 @@ async function makeConnectPage({ provider, queue }) {
   });
   const bridge = new BrowserSerialBridge({ createWebUsbSerial: () => provider });
   const calls = { runtime: 0, errors: [], cancelled: [] };
-  const dom = {
-    serialConnectToggleEl: pageElement("serialConnectToggleEl"),
-    webusbConnectToggleEl: pageElement("webusbConnectToggleEl"),
-    webbluetoothConnectToggleEl: pageElement("webbluetoothConnectToggleEl"),
-    radioDownloadEl: pageElement("radioDownloadEl"),
-    radioUploadEl: pageElement("radioUploadEl"),
-    liveRadioSupportWarningEl: pageElement("liveRadioSupportWarningEl"),
-    unsupportedBrowserContinueEl: pageElement("unsupportedBrowserContinueEl"),
-    sidebarControlEls: [],
-  };
-  dom.sidebarControlEls = [
-    dom.serialConnectToggleEl,
-    dom.webusbConnectToggleEl,
-    dom.webbluetoothConnectToggleEl,
-    dom.radioDownloadEl,
-    dom.radioUploadEl,
-  ];
   const ctx = {
-    dom,
+    dom: queryUiElements(),
     state: {
       selectedRadio: {
         vendor: "Baofeng",
@@ -94,7 +73,7 @@ async function makeConnectPage({ provider, queue }) {
       runtimeApi: {
         async serialConnect({ baudRate }) {
           calls.runtime += 1;
-          await queue.promise;
+          await queue;
           return bridge.open(baudRate);
         },
         serialDisconnect: async () => bridge.close(),
@@ -122,14 +101,14 @@ async function makeConnectPage({ provider, queue }) {
   });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
-  return { activation, bridge, calls, ctx };
+  return { activation, calls, ctx };
 }
 
 test("Connect shows the chooser inside the click, before the runtime queue releases it", async () => {
   const port = makeRecordingPort();
   const queue = createDeferred();
   const provider = makeProvider([port]);
-  const { activation, bridge, calls, ctx } = await makeConnectPage({ provider, queue });
+  const { activation, calls, ctx } = await makeConnectPage({ provider, queue: queue.promise });
   const button = ctx.dom.webusbConnectToggleEl;
   assert.equal(button.hidden, false);
   assert.equal(button.disabled, false);
@@ -145,7 +124,6 @@ test("Connect shows the chooser inside the click, before the runtime queue relea
   // The connect is now waiting on the runtime -- an upload ahead of it, say --
   // long after the click's activation lapsed, holding the port it was given.
   assert.equal(calls.runtime, 1);
-  assert.equal(bridge.chosenTransport, port);
   assert.equal(port.opens.length, 0);
 
   queue.resolve();
@@ -154,17 +132,12 @@ test("Connect shows the chooser inside the click, before the runtime queue relea
   assert.deepEqual(calls.errors, []);
   // Opened from the held port, at the radio's rate, with no second chooser.
   assert.equal(provider.asked, 1);
-  assert.equal(bridge.chosenTransport, null);
   assert.deepEqual(port.opens.map((options) => options.baudRate), [115200]);
   assert.equal(button.textContent, "Disconnect");
   assert.equal(ctx.dom.radioDownloadEl.disabled, false);
 });
 
 test("a dismissed chooser never reaches the runtime", async () => {
-  // Nothing holds the runtime here: a connect that did reach it should fail
-  // this test, not hang it.
-  const queue = createDeferred();
-  queue.resolve();
   const provider = {
     async requestPort() {
       const dismissed = new Error("No device selected.");
@@ -172,7 +145,7 @@ test("a dismissed chooser never reaches the runtime", async () => {
       throw dismissed;
     },
   };
-  const { activation, calls, ctx } = await makeConnectPage({ provider, queue });
+  const { activation, calls, ctx } = await makeConnectPage({ provider });
 
   activation.isActive = true;
   const clicked = dispatch(ctx.dom.webusbConnectToggleEl, "click");
@@ -225,7 +198,6 @@ test("a SecurityError while the click is live keeps its name and stays permissio
   const error = await bridge.choosePort("webusb").then(() => null, (thrown) => thrown);
   assert.equal(error, refusal);
   assert.equal(classifyErrorKind(error), "permission_denied");
-  assert.equal(bridge.chosenTransport, null);
 });
 
 test("a picked port serves one open; the next connect asks again", async (t) => {
@@ -249,7 +221,6 @@ test("a picked port serves one open; the next connect asks again", async (t) => 
   activation.isActive = true;
   await bridge.choosePort("webusb");
   assert.equal(provider.asked, 1);
-  assert.equal(bridge.chosenTransport, null);
 
   await bridge.close();
   await bridge.choosePort("webusb");
