@@ -188,6 +188,60 @@ test("losing the port mid-session takes the clone buttons away again", async () 
   assert.equal(ctx.dom.radioDownloadEl.disabled, false);
 });
 
+// The bridge reports a loss the moment it happens, while the connect's result
+// is still crossing the runtime. Ignored as "not connected yet", that report
+// was then overtaken by the result, and the clone buttons came on against a
+// port the bridge had already dropped.
+test("a port lost before the connect's result arrives leaves the clone buttons off", async () => {
+  const createSerialActions = await loadSerialActions();
+  const ctx = makeContext();
+  const statuses = [];
+  ctx.log.setStatus = (message) => statuses.push(message);
+  let serial = null;
+  ctx.state.runtimeApi.serialConnect = async () => {
+    serial.handlePortLost("USB VID:PID 0x0403:0x6015");
+    return { connected: true, transport: "webserial", message: "Connected at 9600 baud" };
+  };
+  serial = createSerialActions(ctx);
+  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSidebarControlsEnabled(true);
+  serial.bindEvents();
+
+  await pressConnectToggle(ctx);
+
+  assert.equal(ctx.dom.radioDownloadEl.disabled, true);
+  assert.equal(ctx.dom.radioUploadEl.disabled, true);
+  assert.equal(ctx.dom.serialConnectToggleEl.textContent, "Connect via WebSerial");
+  assert.equal(statuses.at(-1), "Serial port disconnected; reconnect to continue.");
+
+  // A loss heard while no connect was running is still nobody's: the next
+  // connect starts clean.
+  serial.handlePortLost("USB VID:PID 0x0403:0x6015");
+  ctx.state.runtimeApi.serialConnect = async () => ({ connected: true, transport: "webserial", message: "ok" });
+  await pressConnectToggle(ctx);
+  assert.equal(ctx.dom.radioUploadEl.disabled, false);
+});
+
+test("a port lost to a failed mid-clone settings change says so", async () => {
+  const createSerialActions = await loadSerialActions();
+  const ctx = makeContext();
+  const statuses = [];
+  ctx.log.setStatus = (message) => statuses.push(message);
+  const serial = createSerialActions(ctx);
+  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSidebarControlsEnabled(true);
+  serial.bindEvents();
+  await pressConnectToggle(ctx);
+
+  serial.handlePortLost("USB VID:PID 0x0403:0x6015", "reconfigure");
+
+  assert.equal(
+    statuses.at(-1),
+    "Serial port closed after the radio's driver changed its settings; reconnect to continue.",
+  );
+  assert.equal(ctx.dom.radioUploadEl.disabled, true);
+});
+
 // A browser without WebAssembly stack switching can boot the runtime and edit
 // files -- drivers import from the mounted CHIRP archive -- but CHIRP's clone
 // loops block on the serial bridge through Pyodide's run_sync, which needs

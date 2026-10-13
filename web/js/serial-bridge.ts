@@ -30,9 +30,29 @@ import { wrapTransportError } from "./serial-errors.ts";
 export interface PortLostInfo {
   /** How the port was named while open. */
   deviceName?: string;
-  /** "disconnected", "baud-rate-change", ... */
+  /**
+   * Absent for an adapter that went away; otherwise "baud-rate-change",
+   * "reconfigure", "read-stopped" or "not-connected" (PORT_LOST_REASONS).
+   */
   reason?: string;
 }
+
+/**
+ * Why the bridge gave a port up other than the transport reporting it gone.
+ * Each names the one place that decides it; the UI words its status from it.
+ */
+export const PORT_LOST_REASONS = Object.freeze({
+  // A clone-start re-rate could not reopen the port (applyBaudRate).
+  BAUD_RATE_CHANGE: "baud-rate-change",
+  // A mid-clone settings change failed and the old settings would not come
+  // back either (reconfigure).
+  RECONFIGURE: "reconfigure",
+  // The port's readable ended or errored while it was still the one held.
+  READ_STOPPED: "read-stopped",
+  // A call found no usable port although no loss had been reported: the
+  // backstop for any path that drops the port without saying so.
+  NOT_CONNECTED: "not-connected",
+} as const);
 
 /**
  * What open() reports: the message the UI shows, and the identity the issue
@@ -125,6 +145,7 @@ export class SerialBridge {
   portOptions: SerialOpenOptions | null;
   lastSignals: SerialSignals | null;
   _readLoop: Promise<void> | null;
+  _announcedOpen: boolean;
 
   // requestTransport is the transport factory: an async function returning a
   // port that satisfies web/js/serial-transport.ts, not yet opened. The
@@ -145,10 +166,13 @@ export class SerialBridge {
     // loop MUST report why it ended: a silently-dead read loop is
     // indistinguishable from "no data" and cost us a debugging session.
     this.onDebug = null;
-    // Called when the port's transport reports that the adapter behind the
-    // open port has gone away -- unplugged, or powered down with the radio
-    // where the adapter lives in the cable -- and when a clone-start re-rate
-    // leaves the port unusable. The port is already torn down by then.
+    // Called once for every port the bridge gives up other than by close():
+    // the transport reports the adapter gone (unplugged, or powered down with
+    // the radio where the adapter lives in the cable), a re-rate or a
+    // mid-clone change leaves the port unusable, or its readable stops. The
+    // bridge holds nothing by then, though the transport's close may still be
+    // settling. Whatever the UI was told at connect, this is the only way it
+    // hears otherwise, so no path may drop the port without it.
     this.onPortLost = null;
     // The unsubscribe the port's onDisconnect() handed back.
     this._stopLossWatch = null;
@@ -165,6 +189,11 @@ export class SerialBridge {
     // before starting the next. Two loops sharing this.readBuffer would
     // interleave stale and fresh bytes.
     this._readLoop = null;
+    // Whether the caller has been told a port is open: set as open() returns
+    // it, cleared by close() and by the loss report. It is what makes that
+    // report once-only whichever path drops the port first, and what lets a
+    // call that finds no port report a loss nobody else did.
+    this._announcedOpen = false;
   }
 
   // Derived rather than stored: portOptions is what the port was actually
@@ -196,6 +225,7 @@ export class SerialBridge {
       // a second open() at a different rate used to be swallowed here, leaving
       // the clone to run at the first radio's rate (issue #76).
       const applied = await this.applyBaudRate(baudRate);
+      this._announcedOpen = true;
       return {
         connected: true,
         message: applied.changed
@@ -204,6 +234,8 @@ export class SerialBridge {
         transport: this.transport,
       };
     }
+    // A caller opening afresh holds no connection it could be told it lost.
+    this._announcedOpen = false;
     if (this.port) {
       await this._teardown();
     }
@@ -223,6 +255,9 @@ export class SerialBridge {
       this.lastDeviceName = this._describePort(port);
       this._takeStreams(port);
       this._watchForPortLoss(port);
+      // Set with nothing awaited between it and the return, so no loss can
+      // land after the watch starts and before the caller is told.
+      this._announcedOpen = true;
       return {
         connected: true,
         message: `Connected at ${rate} baud${TRANSPORT_SUFFIX[this.transport] || ""}`,
@@ -255,7 +290,7 @@ export class SerialBridge {
       return { changed: false, baudRate: this.baudRate, previousBaudRate: this.baudRate };
     }
     if (!this.port || !this.writer) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     // Back to the defaults, not to whatever the last clone's driver left
     // behind, and compared as a whole set so drifted framing is reset even when
@@ -273,9 +308,10 @@ export class SerialBridge {
       // Download against a port that can no longer carry it. Tear the session
       // down and report the loss on the same channel an unplug uses, so the
       // clone buttons go with it rather than pointing at a closed port.
-      const deviceName = this.lastDeviceName;
-      await this._teardown();
-      this._reportPortLost({ deviceName, reason: "baud-rate-change" });
+      await this._losePort({
+        deviceName: this.lastDeviceName,
+        reason: PORT_LOST_REASONS.BAUD_RATE_CHANGE,
+      });
       throw wrapTransportError(
         `Could not reopen the serial port at ${wanted} baud: ${errorFields(error).message || error}`,
         error,
@@ -287,6 +323,8 @@ export class SerialBridge {
 
   // Disconnect, if anything is connected.
   async close(): Promise<{ connected: false; message: string }> {
+    // The caller asked for this, so it is never reported as a loss.
+    this._announcedOpen = false;
     if (!this.port) {
       return { connected: false, message: "No port connected." };
     }
@@ -296,30 +334,74 @@ export class SerialBridge {
 
   // Release reader/writer locks and close the port, clearing all session state.
   // Safe to call on a fully- or partially-open port.
+  //
+  // Everything the bridge holds is let go of before the first await, and the
+  // transport is only closed after: a port is never left half-held while its
+  // streams or its close() settle, which on a device that vanished they may
+  // take arbitrarily long to do, or never do.
   async _teardown() {
+    const port = this.port;
     this._unwatchPortLoss();
-    await this._releaseStreams();
+    this.port = null;
+    this.portOptions = null;
+    this.lastSignals = null;
+    this.readBuffer = new Uint8Array(0);
+    const released = this._releaseStreams();
+    this._resolveReadWaiters(false);
+    await released;
     try {
-      await this.port?.close();
+      await port?.close();
     } catch {
       // Ignore close errors.
     }
+  }
 
-    this.port = null;
-    this.reader = null;
-    this.writer = null;
-    this.portOptions = null;
-    this.lastSignals = null;
-    this._readLoop = null;
-    this.readBuffer = new Uint8Array(0);
-    this._resolveReadWaiters(false);
+  // Give up the held port because it can no longer carry a clone, and say so.
+  // The report goes out once the bridge has let go of everything and before
+  // the transport's close is awaited, so a close that never settles cannot
+  // keep the UI offering clone actions against a port the bridge has dropped.
+  async _losePort(info: PortLostInfo) {
+    const closing = this._teardown();
+    this._reportPortLost(info);
+    await closing;
+  }
+
+  // The error every call that needs an open port throws without one. If the
+  // caller was still told a port is open, the port went without a loss
+  // report, whatever dropped it; it is reported now, so the UI stops offering
+  // clone actions after one failed attempt rather than never.
+  _notConnected(): Error {
+    if (this._announcedOpen) {
+      const info = { deviceName: this.lastDeviceName, reason: PORT_LOST_REASONS.NOT_CONNECTED };
+      this._debug("Serial port found unusable with no loss reported; reporting it now.");
+      if (this.port) {
+        // Held without its streams: let go of it too, so a reconnect starts
+        // clean. Its close may stall; nothing waits for it. A reopen holds the
+        // port without streams too, but only between its own awaits, and no
+        // call can land there: every bridge call comes from the one Python
+        // thread, which is suspended in that reopen. A caller that does not
+        // go through it would have to be kept out of this.
+        void this._losePort(info);
+      } else {
+        this._reportPortLost(info);
+      }
+    }
+    return new Error("Port is not connected.");
   }
 
   // Cancel the read loop and drop the reader/writer locks, leaving the port
-  // handle alone. Teardown and a reopen both need this half.
+  // handle alone. Teardown and a reopen both need this half. The bridge stops
+  // holding the streams before anything is awaited, so the outgoing loop sees
+  // at once that it is no longer the current one.
   async _releaseStreams() {
+    const reader = this.reader;
+    const writer = this.writer;
+    const loop = this._readLoop;
+    this.reader = null;
+    this.writer = null;
+    this._readLoop = null;
     try {
-      await this.reader?.cancel();
+      await reader?.cancel();
     } catch {
       // Ignore cancellation errors.
     }
@@ -327,23 +409,20 @@ export class SerialBridge {
       // Cancelling settles the pending read, but the loop's own continuation is
       // still queued. A reopen that carries the read buffer across cannot have
       // the outgoing loop appending to it afterwards, so wait for it to finish.
-      await this._readLoop;
+      await loop;
     } catch {
       // The loop reports its own end; a rejection must not mask the caller.
     }
-    this._readLoop = null;
     try {
-      this.reader?.releaseLock();
+      reader?.releaseLock();
     } catch {
       // Ignore lock-release errors.
     }
     try {
-      this.writer?.releaseLock();
+      writer?.releaseLock();
     } catch {
       // Ignore lock-release errors.
     }
-    this.reader = null;
-    this.writer = null;
   }
 
   // The held port's state and identity, for the UI and issue reports.
@@ -374,7 +453,7 @@ export class SerialBridge {
   // Write raw bytes to the open port.
   async writeBytes(bytesLike: ArrayLike<number> | null | undefined): Promise<{ written: number }> {
     if (!this.writer) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     const bytes = Uint8Array.from(bytesLike || []);
     await this.writer.write(bytes);
@@ -386,7 +465,7 @@ export class SerialBridge {
   // hands a driver is a short read, never an error, when the line goes quiet.
   async readBytes(count: number, timeoutMs: number): Promise<number[]> {
     if (!this.port) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     const wanted = Math.max(0, Number(count || 0));
     if (wanted === 0) {
@@ -433,7 +512,7 @@ export class SerialBridge {
   // one round trip per waitMs rather than one per loop iteration.
   async inWaiting(waitMs: number): Promise<{ available: number }> {
     if (!this.port) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     const wait = Math.max(0, Number(waitMs || 0));
     if (this.readBuffer.length === 0 && wait > 0) {
@@ -473,7 +552,7 @@ export class SerialBridge {
     transport: string;
   }> {
     if (!this.port) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     // The driver's declared rate wins over whatever the port was connected
     // with: the radio selected at Connect time need not be the one being
@@ -518,7 +597,7 @@ export class SerialBridge {
     requestToSend: boolean | null | undefined,
   ): Promise<{ applied: boolean } & SerialSignals> {
     if (!this.port) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     const signals: SerialSignals = {};
     if (dataTerminalReady !== null && dataTerminalReady !== undefined) {
@@ -554,7 +633,7 @@ export class SerialBridge {
   ): Promise<{ reconfigured: boolean; options: SerialOpenOptions; changed: string[] }> {
     // open() records the options with the port, so an open port has both.
     if (!this.port || !this.portOptions) {
-      throw new Error("Port is not connected.");
+      throw this._notConnected();
     }
     const current: SerialOpenOptions = this.portOptions;
     const next: SerialOpenOptions = { ...current };
@@ -593,11 +672,17 @@ export class SerialBridge {
       // Unlike a clone-start re-rate, the session is worth saving here: the
       // port itself is fine, only the change failed, and a live port lets the
       // user retry without re-picking the device. Put it back as it was.
+      // If even that fails the port is gone, and it is reported on the same
+      // channel as any other loss: tearing it down in silence left the UI
+      // offering Upload against a bridge that held nothing.
       try {
         await this._reopenPort(current, { preserveBuffer: true });
         await this._restoreSignals();
       } catch {
-        await this._teardown();
+        await this._losePort({
+          deviceName: this.lastDeviceName,
+          reason: PORT_LOST_REASONS.RECONFIGURE,
+        });
       }
       throw wrapTransportError(
         `Could not reconfigure the port (${changed.join(", ")}): ${errorFields(error).message || error}`,
@@ -710,13 +795,18 @@ export class SerialBridge {
     }
     const deviceName = this.lastDeviceName;
     this._debug(`Serial port disconnected: ${deviceName || "unknown device"}`);
-    await this._teardown();
-    this._reportPortLost({ deviceName });
+    await this._losePort({ deviceName });
   }
 
-  // Deliver a loss to onPortLost; a broken sink must never take down the
-  // serial path.
+  // Deliver a loss to onPortLost, once per connection the caller was told
+  // about: several paths can notice the same loss (a read error, then the
+  // transport's own report), and close() is never one. A broken sink must
+  // never take down the serial path.
   _reportPortLost(info: PortLostInfo) {
+    if (!this._announcedOpen) {
+      return;
+    }
+    this._announcedOpen = false;
     try {
       this.onPortLost?.(info);
     } catch {
@@ -744,22 +834,25 @@ export class SerialBridge {
     const reader = readable.getReader();
     this.reader = reader;
     this.writer = writable.getWriter();
-    this._readLoop = this._startReadLoop(reader);
+    this._readLoop = this._startReadLoop(reader, port);
   }
 
   // The reader is pinned by the caller rather than re-read each pass: a reopen
   // installs a new reader while this loop may still be unwinding, and an
-  // unpinned loop would then read from the successor's stream.
-  async _startReadLoop(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  // unpinned loop would then read from the successor's stream. The port is
+  // pinned too: a chunk the outgoing reader hands over during a reopen is the
+  // same connection's data and is kept, but one it hands over after teardown
+  // belongs to no connection and must not reach the next one's buffer.
+  async _startReadLoop(reader: ReadableStreamDefaultReader<Uint8Array>, port: SerialTransport) {
     let endReason = "port closed";
-    while (this.port && this.reader === reader) {
+    while (this.port === port && this.reader === reader) {
       try {
         const { value, done } = await reader.read();
         if (done) {
           endReason = "stream ended (done)";
           break;
         }
-        if (value && value.length > 0) {
+        if (value && value.length > 0 && this.port === port) {
           this.readBuffer = concatUint8(this.readBuffer, value);
           this._resolveReadWaiters(true);
         }
@@ -768,9 +861,22 @@ export class SerialBridge {
         break;
       }
     }
+    // Teardown and a reopen both stop holding the reader before they cancel
+    // it, so a loop whose port and reader are still the held ones was ended
+    // by the port, not by the bridge.
+    const stoppedUnasked = this.port === port && this.reader === reader;
     // Surface loop death loudly; a disconnect is expected, an error is not.
     this._debug(`Serial read loop ended: ${endReason}`);
     this._resolveReadWaiters(false);
+    if (stoppedUnasked) {
+      // Nothing reads this port again, yet it stayed held and the UI kept
+      // offering a clone that could only time out ("radio did not respond").
+      // Not awaited: the teardown waits for this very loop to return.
+      void this._losePort({
+        deviceName: this.lastDeviceName,
+        reason: PORT_LOST_REASONS.READ_STOPPED,
+      });
+    }
   }
 
   _waitForReadEvent(timeoutMs: number): Promise<boolean> {

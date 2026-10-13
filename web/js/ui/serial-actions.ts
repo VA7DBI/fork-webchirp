@@ -20,10 +20,19 @@ import {
   isPortSelectionCancelled,
   isSerialUnsupported,
 } from "../serial-errors.ts";
+import { PORT_LOST_REASONS } from "../serial-bridge.ts";
 import { requireRuntimeApi } from "./state.ts";
 import type { UiContext } from "../types/ui-context.js";
 import type { CatalogRadio } from "../runtime-rpc.ts";
 import type { RadioSessionHandle } from "./state.ts";
+
+// How the status line words a loss the bridge caused itself, by the reason it
+// reports (PORT_LOST_REASONS); any other loss reads as a disconnect, which is
+// what it is to the user whether the adapter went or its stream stopped.
+const PORT_LOST_CAUSES: Readonly<Record<string, string>> = Object.freeze({
+  [PORT_LOST_REASONS.BAUD_RATE_CHANGE]: "Serial port closed while switching to the selected radio's baud rate",
+  [PORT_LOST_REASONS.RECONFIGURE]: "Serial port closed after the radio's driver changed its settings",
+});
 
 const LIVE_RADIO_TITLE = "Live-mode radios are not supported in this UI yet";
 const NO_RADIO_SELECTED_TITLE = "Search for and select a radio first";
@@ -74,6 +83,22 @@ export function createSerialActions(ctx: UiContext) {
   // waits for the transfer to end. A lost port still ends it promptly: the
   // bridge fails every read once the port is gone.
   let cloneRunning = false;
+  // A connect in flight, and a loss the bridge reported during it. The bridge
+  // reports a loss as soon as it happens, while the connect's own result is
+  // still on its way back through the runtime; dropped as "not connected",
+  // that report was overtaken by the result marking the lost port connected.
+  // It is held instead and applied once the result has been.
+  let connecting = false;
+  let lossDuringConnect: { deviceName?: string; reason?: string } | null = null;
+
+  // Hand over the loss held during a connect, if any, and forget it. A
+  // function rather than a read in place: handlePortLost() sets it while the
+  // connect is awaiting, which narrowing inside connectSerial() cannot see.
+  function takeLossDuringConnect(): { deviceName?: string; reason?: string } | null {
+    const loss = lossDuringConnect;
+    lossDuringConnect = null;
+    return loss;
+  }
 
   // Wire the serial bridge's transport controls (capability + forced transport)
   // so the UI can offer explicit WebUSB and WebBluetooth connect paths.
@@ -116,6 +141,8 @@ export function createSerialActions(ctx: UiContext) {
     }
     transportController?.setPreferredTransport(preferredTransport);
     setSerialButtonsBusy(true);
+    connecting = true;
+    lossDuringConnect = null;
     try {
       const baudRate = Number(state.selectedRadio?.baudRate || 9600);
       const transportLabel = preferredTransport === "webbluetooth"
@@ -149,6 +176,11 @@ export function createSerialActions(ctx: UiContext) {
         ...radioEventParams(state.selectedRadio),
         transport: transport || "unknown",
       });
+      // The connect did succeed; the port went after it. Said in that order.
+      const loss = takeLossDuringConnect();
+      if (loss) {
+        handlePortLost(loss.deviceName, loss.reason);
+      }
     } catch (error) {
       // A user who closes the browser's port picker lands here too; error_kind
       // separates that from an adapter the browser could not open.
@@ -198,6 +230,8 @@ export function createSerialActions(ctx: UiContext) {
       log.reportActionError("Serial connect", error);
       log.logSerial(`ERROR ${errorSummary(error)}`);
     } finally {
+      connecting = false;
+      lossDuringConnect = null;
       setSerialButtonsBusy(false);
       refreshSerialConnectToggleLabel();
       updateSerialActionState();
@@ -230,19 +264,21 @@ export function createSerialActions(ctx: UiContext) {
 
   // The open port is gone: unplugged, powered down with the radio on cables
   // that draw from it, or refused when the bridge reopened it for a driver with
-  // a different baud rate. The bridge has already torn the port down, so the
-  // UI's job is to stop claiming there is a connection — otherwise
-  // Download/Upload stay lit against a port that is gone.
+  // a different baud rate or for a driver's mid-clone settings change. The
+  // bridge has already let go of the port, so the UI's job is to stop claiming
+  // there is a connection — otherwise Download/Upload stay lit against a port
+  // that is gone.
   function handlePortLost(deviceName: string | undefined, reason: string | undefined): void {
     if (!connected) {
+      if (connecting) {
+        lossDuringConnect = { deviceName, reason };
+      }
       return;
     }
     const lostTransport = transport || "unknown";
     connected = false;
     transport = "";
-    const cause = reason === "baud-rate-change"
-      ? "Serial port closed while switching to the selected radio's baud rate"
-      : "Serial port disconnected";
+    const cause = PORT_LOST_CAUSES[reason || ""] || "Serial port disconnected";
     log.setStatus(`${cause}; reconnect to continue.`);
     log.logSerial(`${cause}${deviceName ? ` (${deviceName})` : ""}.`);
     trackEvent("serial_port_lost", {

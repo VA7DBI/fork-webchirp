@@ -240,7 +240,9 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   a model-level entry promises a download for that model. Record `unknown` rather than
   guessing; an unknown radio gets no section. Adding a vendor to the catalog without
   an answer fails `tests/build/radio-firmware.mjs`.
-- When you discover something new, or unexpected, put it in FINDINGS.md.
+- When you discover something new, or unexpected, put it in FINDINGS.md and
+  nowhere else. CLAUDE.md holds instructions only: no findings, triage notes
+  or explanations of why something happened.
 - Analytics goes through `trackEvent` in `web/js/ui/analytics.ts`; never reach
   `gtag` directly. Every parameter an event sends must be declared in
   `CUSTOM_DIMENSIONS` (`web/js/analytics.ts`) or GA collects it and shows it
@@ -252,6 +254,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   - Upload should use the session's image and fail clearly if the session holds
     none that came from the radio or a file (a synthetic export never counts).
   - Prepare serial session before clone operations (buffer clear, control lines, settle delay).
+  - When `SerialBridge` gives up a port for any reason other than `close()`,
+    call `_losePort()`, never `_teardown()` alone. It reports `onPortLost`
+    once, before awaiting the transport's close; that report is the only way
+    the UI learns the port is gone.
 
 ## Agent CLI
 - For agent-operated real-radio reads, use `npm run radio:read -- --port <path> --module <driver_module> --class <driver_class> --format json|csv|img --output <file>`.

@@ -118,3 +118,120 @@ test("a port the bridge has let go of cannot tear down the next session", async 
   assert.equal(bridge.port, second);
   await bridge.close();
 });
+
+// WEBCHIRP-FRONTEND-1X/-1Y: Upload stayed enabled for half an hour while every
+// attempt failed with "Port is not connected.", because the bridge had let go
+// of the port without onPortLost ever reaching the UI. These pin the rule
+// behind the fix: whatever drops the port, the UI hears it, once.
+
+// A vanished device's close() may take arbitrarily long or never settle. The
+// bridge used to await it before reporting, so a stalled close left it holding
+// a port with no writer -- the exact state that answers a clone with "Port is
+// not connected." -- and the UI never told.
+test("a lost port is reported even when its close never settles", async (t) => {
+  const port = makeRecordingPort();
+  port.close = () => new Promise(() => {});
+  const { bridge, lost } = await openContractBridge(t, port);
+
+  port.unplug();
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015" }]);
+  assert.equal(bridge.port, null);
+  assert.equal(bridge.writer, null);
+  assert.equal(bridge.getPortInfo().connected, false);
+  await assert.rejects(() => bridge.prepareClone(true, true, 0, 9600), /Port is not connected/);
+  assert.equal(lost.length, 1, "a loss already reported is not reported again");
+});
+
+// The backstop for a path nobody has found yet: a teardown that skipped the
+// report stands in for it. The call that finds the port gone reports it, so
+// the clone buttons go after one failed attempt instead of never.
+test("a port dropped without a report is reported by the next call that needs it", async (t) => {
+  const { bridge, lost } = await openContractBridge(t, makeRecordingPort());
+  await bridge._teardown();
+  assert.equal(lost.length, 0);
+
+  await assert.rejects(() => bridge.prepareClone(true, true, 0, 9600), /Port is not connected/);
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "not-connected" }]);
+  await assert.rejects(() => bridge.writeBytes([0x01]), /Port is not connected/);
+  assert.equal(lost.length, 1);
+});
+
+// The half-held shape the report describes: the port still referenced, its
+// writer gone. It is released as well as reported, so a reconnect starts
+// clean instead of tripping over it.
+test("a port held without its streams is let go of when a call finds it", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+  await bridge._releaseStreams();
+  assert.equal(bridge.port, port);
+
+  await assert.rejects(() => bridge.prepareClone(true, true, 0, 9600), /Port is not connected/);
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "not-connected" }]);
+  assert.equal(bridge.port, null);
+  assert.equal(port.closed, true);
+});
+
+test("a call after an intentional close is refused without reporting a loss", async (t) => {
+  const { bridge, lost } = await openContractBridge(t, makeRecordingPort());
+  await bridge.close();
+
+  await assert.rejects(() => bridge.prepareClone(true, true, 0, 9600), /Port is not connected/);
+  await assert.rejects(() => bridge.readBytes(1, 0), /Port is not connected/);
+
+  assert.equal(lost.length, 0);
+});
+
+// A read loop that dies on its own -- the device stopped feeding the stream,
+// as after a sleep -- used to leave the port held and deaf: the next clone
+// timed out as "radio did not respond" while the UI offered it as connected.
+test("a read error on the held port ends the session and is reported", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+  const debug = [];
+  bridge.onDebug = (message) => debug.push(message);
+
+  port.failRead(new Error("The device has been lost."));
+  await tick();
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "read-stopped" }]);
+  assert.equal(bridge.port, null);
+  assert.equal(port.closed, true);
+  assert.ok(debug.includes("Serial read loop ended: read error: The device has been lost."));
+  // The transport's own report of the same loss, arriving after, is not a second one.
+  port.unplug();
+  await tick();
+  assert.equal(lost.length, 1);
+});
+
+test("a stream that ends while the port is still held is a loss too", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+
+  // The transport closing under the bridge, which never asked it to.
+  await port.close();
+  await tick();
+  await tick();
+
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "read-stopped" }]);
+  assert.equal(bridge.port, null);
+});
+
+// The bridge ends its own read loops on every reopen and teardown; none of
+// those is the port stopping.
+test("ending the read loop itself is never reported as a loss", async (t) => {
+  const port = makeRecordingPort();
+  const { bridge, lost } = await openContractBridge(t, port);
+
+  await bridge.applyBaudRate(57600);
+  await bridge.reconfigure({ parity: "even" });
+  await bridge.close();
+  await tick();
+
+  assert.equal(lost.length, 0);
+});

@@ -66,7 +66,9 @@ export function makeEmitter(extra = {}) {
 //
 // Records: opens (option copies), closes, signals (every call), written
 // (every byte), plus opened/closed flags. push(bytes) puts a chunk on the line;
-// unplug() reports the port lost through onDisconnect(), as a transport does.
+// unplug() reports the port lost through onDisconnect(), as a transport does;
+// failRead(error) errors the pending read and every later one, as a
+// stream the device stopped feeding does.
 export function makeRecordingPort({
   usbVendorId = 0x0403,
   usbProductId = 0x6015,
@@ -82,6 +84,9 @@ export function makeRecordingPort({
   const chunks = [];
   let pendingRead = null;
   let readers = 0;
+  // The error failRead() put on the line, and how to hand it to a parked read.
+  let readError = null;
+  let rejectPendingRead = null;
 
   // Hand the parked read whatever it can have now: the next chunk, or the end
   // of the stream once the port is closed.
@@ -115,14 +120,18 @@ export function makeRecordingPort({
         if (cancelled) {
           return Promise.resolve({ done: true });
         }
+        if (readError) {
+          return Promise.reject(readError);
+        }
         if (chunks.length > 0) {
           return Promise.resolve({ value: chunks.shift(), done: false });
         }
         if (port.closed) {
           return Promise.resolve({ done: true });
         }
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
           pendingRead = resolve;
+          rejectPendingRead = reject;
         });
       },
       async cancel() {
@@ -180,6 +189,13 @@ export function makeRecordingPort({
     push(bytes) {
       chunks.push(Uint8Array.from(bytes));
       settle();
+    },
+    failRead(error) {
+      readError = error instanceof Error ? error : new Error(String(error));
+      const reject = rejectPendingRead;
+      pendingRead = null;
+      rejectPendingRead = null;
+      reject?.(readError);
     },
     readable: { getReader },
     writable: {
