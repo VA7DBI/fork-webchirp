@@ -15,7 +15,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `tests/support/node-serial-port.mjs` for node-serialport. One `SerialBridge`
   (`web/js/serial-bridge.ts`, no DOM or navigator) owns buffering, clone
   preparation, re-rating and reconfigure for both environments, given a
-  transport factory: `web/js/serial.ts` adds the browser chooser,
+  transport factory. Every port it gives up other than by `close()` -- lost,
+  failed to re-rate or reconfigure, read stopped -- goes through `_losePort()`,
+  which reports `onPortLost` once and before awaiting the transport's close,
+  so the UI's Connected state can never outlive the port: `web/js/serial.ts` adds the browser chooser,
   `tests/support/radio-harness.mjs` the tty. `web/js/serial-globals.ts`
   installs the `serial_*` globals Python imports (declared in
   `web/python/typings/js.pyi`) for both. A transport that cannot do something
