@@ -333,10 +333,23 @@ def _issue(row_index: int, column: str, message: ValidationMessage) -> Validatio
 
 def _row_location(row: Row) -> Optional[int]:
     """The row's memory number, or None when its Location is not an integer."""
+    location = (row or {}).get("Location")
     try:
-        return int(str((row or {}).get("Location", "") or "").strip())
+        return int(str("" if location is None else location).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _memory_slot_key(row: Row, location: int) -> int:
+    """The memory slot a row writes to, which no two rows may share.
+
+    Just the Location today. A radio with sub-devices numbers each device's
+    memories from the same range (issue #30), so its slot will have to name
+    the device too. The upload preflight and ``_apply_rows_to_radio_instance``
+    both key their one-row-per-slot check through here, so the two cannot
+    disagree about what a duplicate is.
+    """
+    return location
 
 
 def _row_findings(
@@ -474,23 +487,24 @@ def validate_rows_for_upload(rows: Rows, session_id: str = "") -> dict[str, Any]
     """
     session = resolve_optional_session(session_id)
     radio, level_map, bounds = _session_radio_context(session)
-    seen_locations: dict[int, int] = {}
+    seen_slots: dict[int, int] = {}
     issues: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
     for row_index, row in enumerate(rows or []):
         location = _row_location(row)
         if location is not None and (not bounds or bounds[0] <= location <= bounds[1]):
-            if location in seen_locations:
+            slot = _memory_slot_key(row, location)
+            if slot in seen_slots:
                 issues.append(
                     _issue(
                         row_index,
                         "Location",
                         f"Channel Location {location} is already used by "
-                        f"row {seen_locations[location] + 1}",
+                        f"row {seen_slots[slot] + 1}",
                     )
                 )
             else:
-                seen_locations[location] = row_index
+                seen_slots[slot] = row_index
         row_errors, row_warnings = _row_findings(radio, level_map, bounds, row)
         issues.extend(_issue(row_index, column, message) for column, message in row_errors)
         warnings.extend(
