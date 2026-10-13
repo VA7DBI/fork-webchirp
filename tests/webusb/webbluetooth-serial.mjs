@@ -140,6 +140,9 @@ test("unexpected BLE link loss tears down the bridge and reports the device", as
   assert.match(event.deviceName, /BT-1AD/);
   assert.equal(bridge.port, null);
   assert.equal(bridge.writer, null);
+  // The report does not wait for the transport's close (a lost device's may
+  // never settle); this one does settle, and drops its listener.
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(rx.listenerCount("characteristicvaluechanged"), 0);
 });
 

@@ -343,6 +343,25 @@ for (const { name, create } of TRANSPORTS) {
       await port.close();
     });
 
+    // The same loss end to end: whichever the transport notices first -- its
+    // own event, or its streams ending -- the bridge reports it once and holds
+    // nothing after, so a clone is refused rather than offered.
+    test("a lost device is one loss report through the bridge, which then holds nothing", async () => {
+      const fixture = create();
+      const { bridge } = await openThroughBridge(fixture.port);
+      const lost = [];
+      bridge.onPortLost = (info) => lost.push(info);
+
+      fixture.loseDevice();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      assert.equal(lost.length, 1);
+      assert.equal(bridge.port, null);
+      assert.equal(bridge.getPortInfo().connected, false);
+      await assert.rejects(() => bridge.prepareClone(true, true, 0, 57600), /Port is not connected/);
+      assert.equal(lost.length, 1);
+    });
+
     test("usbDevice is the USBDevice behind the port, or null", () => {
       const fixture = create();
       assert.equal(fixture.port.usbDevice, fixture.usbDevice);

@@ -139,11 +139,28 @@ test("a reopen that cannot be undone leaves no zombie port behind", async (t) =>
   const { bridge } = await openBridge(t, {
     failOpenWhen: (options, attempt) => (attempt === 0 ? null : "device is gone"),
   });
+  const lost = [];
+  bridge.onPortLost = (info) => lost.push(info);
 
   await assert.rejects(() => bridge.reconfigure({ baudRate: 57600 }), /Could not reconfigure/);
 
   assert.equal(bridge.port, null);
   assert.equal(bridge.getPortInfo().connected, false);
+  // Reported like any other loss. Torn down in silence, the UI went on
+  // offering Upload against a bridge that held nothing.
+  assert.deepEqual(lost, [{ deviceName: "USB VID:PID 0x0403:0x6015", reason: "reconfigure" }]);
+});
+
+test("a refused reopen that puts the old settings back is not a loss", async (t) => {
+  const { bridge } = await openBridge(t, {
+    failOpenWhen: (options) => (options.baudRate === 57600 ? "unsupported baud rate" : null),
+  });
+  const lost = [];
+  bridge.onPortLost = (info) => lost.push(info);
+
+  await assert.rejects(() => bridge.reconfigure({ baudRate: 57600 }), /Could not reconfigure/);
+
+  assert.equal(lost.length, 0);
 });
 
 // Reporting drops a busy USB interface and a native port that would not open by
