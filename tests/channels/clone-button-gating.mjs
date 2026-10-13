@@ -428,7 +428,7 @@ async function bootConnectedUi(runtime = {}) {
     validateRadioSettings: async () => ({ valid: true, issues: [], settings: CLONE_SETTINGS }),
     ...runtime,
   }));
-  ui.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  ui.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   await ui.init(true);
   selectRadioBySearch(document, "Acme Clone");
   await flushMicrotasks();
