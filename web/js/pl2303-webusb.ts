@@ -319,6 +319,13 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     await this._classInterfaceOut(SET_LINE_REQUEST, 0, coding.buffer);
   }
 
+  // Write DTR|RTS as one absolute value and keep the shadow in step with the
+  // chip, so setSignals() only skips a write the chip has really seen.
+  async _writeControlLines(lines: number): Promise<void> {
+    await this._classInterfaceOut(SET_CONTROL_REQUEST, lines, undefined);
+    this._controlLines = lines;
+  }
+
   async open(options: Partial<SerialOpenOptions> = {}): Promise<void> {
     const baudRate = Number(options.baudRate) || 9600;
     // Checked before the device is touched: a frame this chip cannot carry
@@ -370,6 +377,11 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     await this._purgeBuffers();
     await this._setFlowControlNone();
     await this._setLineCoding(baudRate, framing);
+    // Start with both control lines deasserted and the shadow in sync, so the
+    // first setSignals() call always reflects what the chip is actually doing:
+    // close() leaves the lines as they were, so the chip can still hold DTR or
+    // RTS from an earlier session while a new port object's shadow reads 0.
+    await this._writeControlLines(0);
 
     this._setupStreams();
     this._watchDisconnect();
@@ -388,8 +400,7 @@ export class Pl2303SerialPort extends WebUsbTransport implements SerialTransport
     if (lines === this._controlLines) {
       return;
     }
-    await this._classInterfaceOut(SET_CONTROL_REQUEST, lines, undefined);
-    this._controlLines = lines;
+    await this._writeControlLines(lines);
   }
 
   // Input control lines, polled from the chip's control-line register (0x87,
