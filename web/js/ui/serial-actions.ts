@@ -131,7 +131,7 @@ export function createSerialActions(ctx: UiContext) {
   // Connect using the requested transport ("auto", "webusb" or "webbluetooth").
   async function connectSerial(preferredTransport: string): Promise<void> {
     // A transfer still running after a port loss holds the toggles: a connect
-    // queued behind it would open its chooser after the click had expired.
+    // would only wait behind it in the runtime queue, saying "Connecting...".
     if (connected || cloneRunning) {
       return;
     }

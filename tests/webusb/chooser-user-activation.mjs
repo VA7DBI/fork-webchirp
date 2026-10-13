@@ -121,8 +121,9 @@ test("Connect shows the chooser inside the click, before the runtime queue relea
   assert.equal(provider.asked, 1);
 
   await flushMicrotasks();
-  // The connect is now waiting on the runtime -- an upload ahead of it, say --
-  // long after the click's activation lapsed, holding the port it was given.
+  // The connect is now waiting on the runtime -- a driver import ahead of
+  // it, say -- long after the click's activation lapsed, holding the port it
+  // was given.
   assert.equal(calls.runtime, 1);
   assert.equal(port.opens.length, 0);
 
