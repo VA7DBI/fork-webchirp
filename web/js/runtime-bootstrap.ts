@@ -27,9 +27,55 @@ export function isBootstrapFailure(error: unknown): boolean {
  * @returns The error itself, or an Error wrapping a non-Error throw.
  */
 export function markBootstrapFailure(error: unknown): Error {
-  const marked = error instanceof Error ? error : new Error(String(error));
+  const marked = error instanceof Error ? error : new Error(describeThrownValue(error), { cause: error });
   bootstrapFailures.add(marked);
   return marked;
+}
+
+// The longest stretch of a thrown object's own fields kept in the message.
+// Enough for an error-shaped object; the cap is for whatever else turns up.
+const MAX_THROWN_FIELDS = 300;
+
+// Describe a thrown value that is not an Error, for the message of the Error
+// that wraps it. String() makes every object "[object Object]", which is all
+// two failed boots ever told Sentry (WEBCHIRP-FRONTEND-Q, -15), so the
+// constructor's name and the object's own fields are spelled out instead. An
+// Event -- what a script element rejects with when its file will not load --
+// keeps its fields on the prototype, so its type and target are read by name.
+// Values that reach Sentry are redacted there, like any other message.
+export function describeThrownValue(value: unknown): string {
+  if (typeof value !== "object" || value === null) {
+    return String(value);
+  }
+  // A thrown value arrives untyped; these are the fields that say what it was.
+  const thrown = value as {
+    constructor?: { name?: unknown };
+    type?: unknown;
+    target?: { tagName?: unknown; src?: unknown; href?: unknown } | null;
+  };
+  const kind = typeof thrown.constructor?.name === "string" && thrown.constructor.name
+    ? thrown.constructor.name
+    : "Object";
+  const details: string[] = [];
+  if (typeof thrown.type === "string") {
+    details.push(`type ${thrown.type}`);
+  }
+  const target = thrown.target;
+  if (target && typeof target === "object") {
+    const source = [target.src, target.href].find((url) => typeof url === "string" && url);
+    details.push(`target ${[target.tagName, source].filter(Boolean).join(" ") || "unknown"}`);
+  }
+  let fields = "";
+  try {
+    fields = JSON.stringify(value) ?? "";
+  } catch {
+    // A cycle or a throwing getter: the name and details above still stand.
+  }
+  return [
+    `Non-Error thrown: ${kind}`,
+    details.length ? `(${details.join(", ")})` : "",
+    fields && fields !== "{}" ? fields.slice(0, MAX_THROWN_FIELDS) : "",
+  ].filter(Boolean).join(" ");
 }
 
 // Report a bootstrap failure at most once per failed attempt.
