@@ -149,11 +149,8 @@ export function createSerialActions(ctx: UiContext) {
         ? " via WebBluetooth"
         : (preferredTransport === "webusb" ? " via WebUSB" : "");
       log.setStatus(`Connecting serial${transportLabel}...`);
-      // The chooser first, and before anything here awaits: the browser shows
-      // it only while this click still counts as a user gesture (about five
-      // seconds in Chrome), and serialConnect waits its turn behind whatever
-      // holds the runtime -- an upload still timing out after the cable came
-      // out, a driver import -- before its open() takes the picked port.
+      // Before anything here awaits: the chooser needs this click's user
+      // activation, which can lapse while serialConnect waits on the runtime.
       await transportController?.choosePort(preferredTransport);
       const result = await requireRuntimeApi(state).serialConnect({ baudRate });
       connected = Boolean(result?.connected);
@@ -740,28 +737,11 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   function bindEvents() {
-    // The toggles return their promise, which a browser ignores, so a test's
-    // dispatch() can wait for the whole connect: the chooser, then the runtime.
-    dom.serialConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        return disconnectSerial();
-      }
-      return connectSerial("auto");
-    });
-
-    dom.webusbConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        return disconnectSerial();
-      }
-      return connectSerial("webusb");
-    });
-
-    dom.webbluetoothConnectToggleEl.addEventListener("click", () => {
-      if (connected) {
-        return disconnectSerial();
-      }
-      return connectSerial("webbluetooth");
-    });
+    // Each toggle returns its promise, which a browser ignores, so a test's
+    // dispatch() can wait for the whole connect.
+    dom.serialConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("auto")));
+    dom.webusbConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("webusb")));
+    dom.webbluetoothConnectToggleEl.addEventListener("click", () => (connected ? disconnectSerial() : connectSerial("webbluetooth")));
 
     dom.radioDownloadEl.addEventListener("click", () => {
       downloadFromRadio();
