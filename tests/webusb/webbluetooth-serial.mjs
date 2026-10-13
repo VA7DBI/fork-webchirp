@@ -243,11 +243,11 @@ test("explicit Bluetooth selection overrides wired providers and fails clearly w
   const bluetooth = { requestPort() {} };
   withNavigator(t, { serial: native, usb: {}, bluetooth: { requestDevice() {} } });
   const bridge = new BrowserSerialBridge({ createWebBluetoothSerial: () => bluetooth });
-  assert.equal(await bridge._ensureSerial(), native, "auto preserves native serial priority");
+  assert.equal(bridge._ensureSerial(), native, "auto preserves native serial priority");
   bridge.setPreferredTransport("webbluetooth");
-  assert.equal(await bridge._ensureSerial(), bluetooth);
+  assert.equal(bridge._ensureSerial(), bluetooth);
   assert.equal(bridge.transport, "webbluetooth");
   delete navigator.bluetooth;
   bridge.setPreferredTransport("webbluetooth");
-  await assert.rejects(bridge._ensureSerial(), /Web Bluetooth is not supported/);
+  assert.throws(() => bridge._ensureSerial(), /Web Bluetooth is not supported/);
 });

@@ -62,7 +62,7 @@ const CLONE_FLOW_OUTCOMES: Readonly<Record<string, { flow: string; outcome: stri
 export function createSerialActions(ctx: UiContext) {
   const { dom, state, log, actions } = ctx;
 
-  let transportController: { capability?: typeof capability; setPreferredTransport(transport: string): void } | null = null;
+  let transportController: { capability?: typeof capability; choosePort(transport: string): Promise<void> } | null = null;
   let capability = { supported: false, native: false, webusb: false, webbluetooth: false };
   // Whether this browser can run a clone at all (WebAssembly JSPI). Checked
   // when a connection is started, not at init: the rest of the app works
@@ -100,8 +100,9 @@ export function createSerialActions(ctx: UiContext) {
     return loss;
   }
 
-  // Wire the serial bridge's transport controls (capability + forced transport)
-  // so the UI can offer explicit WebUSB and WebBluetooth connect paths.
+  // Wire the serial bridge's transport controls (capability + the chooser for
+  // a forced transport) so the UI can offer explicit WebUSB and WebBluetooth
+  // connect paths.
   function setSerialController(controller: NonNullable<typeof transportController> | null): void {
     transportController = controller || null;
     capability = controller?.capability || capability;
@@ -139,7 +140,6 @@ export function createSerialActions(ctx: UiContext) {
       log.logSerial(CLONE_UNSUPPORTED_MESSAGE);
       return;
     }
-    transportController?.setPreferredTransport(preferredTransport);
     setSerialButtonsBusy(true);
     connecting = true;
     lossDuringConnect = null;
@@ -149,6 +149,12 @@ export function createSerialActions(ctx: UiContext) {
         ? " via WebBluetooth"
         : (preferredTransport === "webusb" ? " via WebUSB" : "");
       log.setStatus(`Connecting serial${transportLabel}...`);
+      // The chooser first, and before anything here awaits: the browser shows
+      // it only while this click still counts as a user gesture (about five
+      // seconds in Chrome), and serialConnect waits its turn behind whatever
+      // holds the runtime -- an upload still timing out after the cable came
+      // out, a driver import -- before its open() takes the picked port.
+      await transportController?.choosePort(preferredTransport);
       const result = await requireRuntimeApi(state).serialConnect({ baudRate });
       connected = Boolean(result?.connected);
       if (result?.deviceName) {
@@ -734,28 +740,27 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   function bindEvents() {
+    // The toggles return their promise, which a browser ignores, so a test's
+    // dispatch() can wait for the whole connect: the chooser, then the runtime.
     dom.serialConnectToggleEl.addEventListener("click", () => {
       if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("auto");
+        return disconnectSerial();
       }
+      return connectSerial("auto");
     });
 
     dom.webusbConnectToggleEl.addEventListener("click", () => {
       if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("webusb");
+        return disconnectSerial();
       }
+      return connectSerial("webusb");
     });
 
     dom.webbluetoothConnectToggleEl.addEventListener("click", () => {
       if (connected) {
-        disconnectSerial();
-      } else {
-        connectSerial("webbluetooth");
+        return disconnectSerial();
       }
+      return connectSerial("webbluetooth");
     });
 
     dom.radioDownloadEl.addEventListener("click", () => {

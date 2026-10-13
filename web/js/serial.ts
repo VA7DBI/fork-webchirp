@@ -6,7 +6,16 @@
 // the transport contract (web/js/serial-transport.ts). Native ports are the
 // browser's own objects, so they are wrapped (web/js/native-serial-port.ts)
 // rather than modified.
-import { createPortSelectionCancelledError, createSerialUnsupportedError } from "./serial-errors.ts";
+//
+// The app shows the chooser from the Connect click itself (choosePort), not
+// from open(): open() is reached through the runtime call queue and Python,
+// and the browser refuses a chooser asked for once the click's user
+// activation has lapsed.
+import {
+  createPortSelectionCancelledError,
+  createSerialUnsupportedError,
+  createUserGestureRequiredError,
+} from "./serial-errors.ts";
 import { NativeSerialPort } from "./native-serial-port.ts";
 import { SerialBridge } from "./serial-bridge.ts";
 import { createWebUsbSerial } from "./webusb-serial.ts";
@@ -43,6 +52,7 @@ function hasWebBluetooth() {
 export class BrowserSerialBridge extends SerialBridge {
   serial: PortProvider | null;
   preferredTransport: string;
+  chosenTransport: SerialTransport | null;
   _createWebUsbSerial: () => PortProvider;
   _createWebBluetoothSerial: () => PortProvider;
 
@@ -63,6 +73,9 @@ export class BrowserSerialBridge extends SerialBridge {
     // "webusb", or "webbluetooth". Forcing "webusb" is needed where native Web Serial exists but
     // cannot drive the adapter (e.g. FTDI cables on Chrome for Android).
     this.preferredTransport = "auto";
+    // The port choosePort() got from the chooser, held unopened for the
+    // open() the connect makes once the runtime reaches it.
+    this.chosenTransport = null;
     this._createWebUsbSerial = createWebUsbSerialImpl || createWebUsbSerial;
     this._createWebBluetoothSerial = createWebBluetoothSerialImpl || createWebBluetoothSerial;
   }
@@ -93,7 +106,9 @@ export class BrowserSerialBridge extends SerialBridge {
 
   // Resolve the serial provider: prefer native Web Serial, otherwise fall back
   // to the WebUSB chip-aware provider. Cached after the first call.
-  async _ensureSerial(): Promise<PortProvider> {
+  // Synchronous, so a chooser shown from a click handler is asked for before
+  // that handler's first await.
+  _ensureSerial(): PortProvider {
     if (this.serial) {
       return this.serial;
     }
@@ -148,22 +163,60 @@ export class BrowserSerialBridge extends SerialBridge {
   // This sits apart from the open() body on purpose: only the chooser
   // produces NotFoundError, so translating inside the wider try would risk
   // relabelling a later failure as a user cancellation.
+  //
+  // One SecurityError is named too: the one a chooser asked for without user
+  // activation gets. Whether the page had activation is read as the chooser is
+  // asked for, the same state the browser checks; a browser without
+  // navigator.userActivation leaves the SecurityError as it is.
   async _requestPort(serial: PortProvider): Promise<SerialPort | SerialTransport> {
+    const activation = typeof navigator !== "undefined" ? navigator.userActivation : undefined;
+    const activationLapsed = activation ? !activation.isActive : false;
     try {
       return await serial.requestPort({});
     } catch (error) {
-      if (errorFields(error).name === "NotFoundError") {
+      const { name } = errorFields(error);
+      if (name === "NotFoundError") {
         throw createPortSelectionCancelledError();
+      }
+      if (name === "SecurityError" && activationLapsed) {
+        throw createUserGestureRequiredError(error);
       }
       throw error;
     }
   }
 
-  // The bridge's transport factory: resolve the provider, show its chooser,
-  // and wrap a native SerialPort so it meets the contract like every other
-  // port does. Its loss events arrive on navigator.serial, the provider.
+  // Show the chooser for transport ("auto", "webserial", "webusb" or
+  // "webbluetooth") and hold the port picked for the next open(). The UI calls
+  // this from the Connect click, before anything awaits, so the chooser is
+  // asked for while the click still counts as a user gesture: the open() that
+  // follows waits on the runtime call queue, and a connect pressed while an
+  // upload or a driver import held it used to show the chooser seconds later,
+  // which the browser refused (WEBCHIRP-FRONTEND-1W). Rejects as the chooser
+  // does: a named cancellation, an unsupported transport, a refusal.
+  async choosePort(transport: string): Promise<void> {
+    this.chosenTransport = null;
+    if (this.port && this.writer) {
+      // open() reuses a live port and never asks for another, so a chooser
+      // now would offer a device it then ignores.
+      return;
+    }
+    this.setPreferredTransport(transport);
+    this.chosenTransport = await this._chooseTransport();
+  }
+
+  // The bridge's transport factory: the port choosePort() picked, once, or --
+  // for a caller that opens without choosing first -- the chooser itself.
   override async requestTransport(): Promise<SerialTransport> {
-    const serial = await this._ensureSerial();
+    const chosen = this.chosenTransport;
+    this.chosenTransport = null;
+    return chosen || this._chooseTransport();
+  }
+
+  // Resolve the provider, show its chooser, and wrap a native SerialPort so it
+  // meets the contract like every other port does. Its loss events arrive on
+  // navigator.serial, the provider. Nothing before the chooser call awaits.
+  async _chooseTransport(): Promise<SerialTransport> {
+    const serial = this._ensureSerial();
     const port = await this._requestPort(serial);
     // Only navigator.serial hands back a bare SerialPort; the WebUSB and Web
     // Bluetooth providers already return contract ports.

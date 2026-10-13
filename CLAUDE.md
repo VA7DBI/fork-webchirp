@@ -16,7 +16,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   (`web/js/serial-bridge.ts`, no DOM or navigator) owns buffering, clone
   preparation, re-rating and reconfigure for both environments, given a
   transport factory: `web/js/serial.ts` adds the browser chooser,
-  `tests/support/radio-harness.mjs` the tty. `web/js/serial-globals.ts`
+  `tests/support/radio-harness.mjs` the tty. The UI shows the chooser from
+  the Connect click itself (`choosePort`), before any await: the browser
+  refuses one once the click's user activation (~5 s) has lapsed, and the
+  connect's `open()` waits on the runtime call queue. `web/js/serial-globals.ts`
   installs the `serial_*` globals Python imports (declared in
   `web/python/typings/js.pyi`) for both. A transport that cannot do something
   declares it in `capabilities`; the bridge never probes.

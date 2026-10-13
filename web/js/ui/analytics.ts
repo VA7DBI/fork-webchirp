@@ -20,7 +20,7 @@
 import { errorDetails } from "./format.ts";
 import { errorFields } from "../error-details.ts";
 import { isRuntimeCallError, jsErrorName } from "../runtime-errors.ts";
-import { isPortSelectionCancelled } from "../serial-errors.ts";
+import { USER_GESTURE_REQUIRED, isPortSelectionCancelled } from "../serial-errors.ts";
 import type { CatalogRadio, RowIssue, SettingIssue } from "../runtime-rpc.ts";
 import type { UiState } from "./state.ts";
 
@@ -87,9 +87,13 @@ export function codeplugParams(
 // off the error -- or, for a failure that came back through Python, off the JS
 // error the JsException carried (jsErrorName, web/js/runtime-errors.ts) --
 // rather than searched for in text. A dismissed chooser is the bridge's named
-// cancellation once translated and a raw NotFoundError before it is.
+// cancellation once translated and a raw NotFoundError before it is. A
+// chooser asked for after the click's user activation lapsed is a SecurityError
+// too, but no permission was denied: the bridge renames that one, and it gets
+// its own kind.
 const JS_ERROR_KINDS = new Map([
   ["NotFoundError", "port_not_selected"],
+  [USER_GESTURE_REQUIRED, "user_gesture_required"],
   ["NotAllowedError", "permission_denied"],
   ["SecurityError", "permission_denied"],
   ["NetworkError", "serial_disconnect"],
