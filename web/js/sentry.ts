@@ -68,16 +68,23 @@ export const SENTRY_HOSTS = Object.freeze([
   "webchirp.org",
 ]);
 
-// Browser noise that is never actionable: a benign layout notification, and a
+// Browser noise that is never actionable: a benign layout notification, a
 // browser extension's messaging call failing inside the page (Safari and
 // Firefox word it this way; the event carries no extension frame for
-// denyUrls to match, WEBCHIRP-FRONTEND-K). Both are raised outside this app's
-// code, so nothing here can name them, and they stay message patterns for the
-// SDK's own ignoreErrors filter. Everything this app raises is filtered by
-// name or type instead (isIgnoredError below).
+// denyUrls to match, WEBCHIRP-FRONTEND-K), and the rejection Microsoft's
+// link scanner leaves behind when it opens a link pasted into Outlook or
+// Teams -- its embedded browser calls back into a host object the page never
+// had, and rejects with a bare string naming the object id and method
+// (WEBCHIRP-FRONTEND-1T: no stack, no click, no radio). The SDK titles that
+// "Non-Error promise rejection captured with value: Object Not Found...", so
+// the pattern is unanchored at the start. All three are raised
+// outside this app's code, so nothing here can name them, and they stay
+// message patterns for the SDK's own ignoreErrors filter. Everything this app
+// raises is filtered by name or type instead (isIgnoredError below).
 const IGNORE_ERRORS = Object.freeze([
   /ResizeObserver loop/i,
   /Invalid call to runtime\.sendMessage\(\)/,
+  /Object Not Found Matching Id:\d+, MethodName:\w+, ParamCount:\d+$/,
 ]);
 
 // The CHIRP errors that describe the user's file, the user's radio or the
