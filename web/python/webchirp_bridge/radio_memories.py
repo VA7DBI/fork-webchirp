@@ -33,7 +33,12 @@ from webchirp_bridge.channel_rows import (
 from webchirp_bridge.jsbridge import _log_debug
 from webchirp_bridge.power_levels import _level_map_for_radio
 from webchirp_bridge.radio_settings import _validate_and_apply_radio_settings
-from webchirp_bridge.row_validation import _immutable_policy_errors, _prepare_row_change
+from webchirp_bridge.row_validation import (
+    _immutable_policy_errors,
+    _memory_slot_key,
+    _prepare_row_change,
+    _row_location,
+)
 from webchirp_bridge.runtime_errors import RuntimeUnsupportedError
 
 if TYPE_CHECKING:
@@ -193,22 +198,41 @@ def _apply_rows_to_radio_instance(
     supplies the memory numbers that must not be erased and the driver's
     power levels for a radio that reports none. Without it the instance's own
     features are all there is, which is what an offline test radio gets.
+
+    Every row must name its own slot. A blank Location is refused rather
+    than read as 0, which on a radio numbered from 0 is a real memory the row
+    would silently replace, and a slot two rows share is refused rather than
+    left to the last of them. The upload preflight reports both as cells, but
+    the binary export runs no preflight, so this is the check every caller
+    gets.
     """
     level_map = _level_map_for_radio(radio, session)
     valid_numbers = set(_iter_memory_numbers(radio))
     seen_numbers = set()
+    seen_slots: dict[int, int] = {}
     unreadable_erase_slots: dict[str, list[int]] = {}
-    for row in rows:
-        try:
-            number = int(row.get("Location", "0") or 0)
-        except ValueError as exc:
+    for row_index, row in enumerate(rows):
+        number = _row_location(row)
+        if number is None:
+            location = row.get("Location")
+            if location is None or not str(location).strip():
+                raise RuntimeUnsupportedError(
+                    f"Row {row_index + 1} has no channel Location"
+                )
             raise RuntimeUnsupportedError(
-                f"Invalid Location value in row: {row.get('Location')!r}"
-            ) from exc
+                f"Invalid Location value in row {row_index + 1}: {location!r}"
+            )
         if number not in valid_numbers:
             raise RuntimeUnsupportedError(
                 f"Channel Location {number} is outside radio memory bounds"
             )
+        slot = _memory_slot_key(row, number)
+        if slot in seen_slots:
+            raise RuntimeUnsupportedError(
+                f"Row {row_index + 1}: channel Location {number} is already "
+                f"used by row {seen_slots[slot] + 1}"
+            )
+        seen_slots[slot] = row_index
         seen_numbers.add(number)
         # CHIRP's immutable policy needs the current driver memory, not merely
         # the flattened grid row, before deciding whether a write is allowed.

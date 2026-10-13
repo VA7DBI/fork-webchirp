@@ -357,6 +357,60 @@ json.dumps(validate_rows_for_upload(_rows, _sid))
     assert.equal(byRow.has(4), false);
   });
 
+  // https://github.com/jasiek/webchirp/issues/89: Export Binary runs no
+  // preflight, so a blank Location used to land on memory 0 (in bounds on a
+  // UV-5R) and the later of two rows sharing a Location silently won.
+  await t.test("binary export refuses a blank Location and a Location two rows share", async () => {
+    const blank = makeChannelRows();
+    blank[1].Location = "";
+    const duplicate = makeChannelRows();
+    duplicate[3].Location = duplicate[2].Location;
+    const result = await harness.runPythonJson(
+      `
+def _export_error(_rows):
+    try:
+        export_image_base64(_sid, _rows)
+    except Exception as _exc:
+        return {"type": type(_exc).__name__, "message": str(_exc)}
+    return None
+
+def _location_issues(_rows):
+    return {
+        _issue["rowIndex"]: _issue["message"]
+        for _issue in validate_rows_for_upload(_rows, _sid)["issues"]
+        if _issue["column"] == "Location"
+    }
+
+_blank = json.loads(_blank_json)
+_duplicate = json.loads(_duplicate_json)
+json.dumps({
+    "blankError": _export_error(_blank),
+    "duplicateError": _export_error(_duplicate),
+    "blankIssues": _location_issues(_blank),
+    "duplicateIssues": _location_issues(_duplicate),
+})
+      `,
+      {
+        _blank_json: JSON.stringify(blank),
+        _duplicate_json: JSON.stringify(duplicate),
+        _sel_module: TEST_RADIO.module,
+        _sel_class: TEST_RADIO.className,
+        _sid: sessionId,
+      },
+    );
+
+    assert.equal(result.blankError?.type, "RuntimeUnsupportedError", JSON.stringify(result));
+    assert.equal(result.blankError.message, "Row 2 has no channel Location");
+    assert.equal(result.duplicateError?.type, "RuntimeUnsupportedError", JSON.stringify(result));
+    assert.equal(
+      result.duplicateError.message,
+      `Row 4: channel Location ${duplicate[2].Location} is already used by row 3`,
+    );
+    // The preflight an upload runs flags the very rows the export refuses.
+    assert.deepEqual(Object.keys(result.blankIssues), ["1"], JSON.stringify(result));
+    assert.deepEqual(Object.keys(result.duplicateIssues), ["3"], JSON.stringify(result));
+  });
+
   await t.test("driver validation rejects a globally valid tuning step", async () => {
     const rows = makeChannelRows().slice(0, 1);
     rows[0].TStep = "15.00";
