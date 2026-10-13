@@ -376,7 +376,11 @@ export class SerialBridge {
       this._debug("Serial port found unusable with no loss reported; reporting it now.");
       if (this.port) {
         // Held without its streams: let go of it too, so a reconnect starts
-        // clean. Its close may stall; nothing waits for it.
+        // clean. Its close may stall; nothing waits for it. A reopen holds the
+        // port without streams too, but only between its own awaits, and no
+        // call can land there: every bridge call comes from the one Python
+        // thread, which is suspended in that reopen. A caller that does not
+        // go through it would have to be kept out of this.
         void this._losePort(info);
       } else {
         this._reportPortLost(info);
