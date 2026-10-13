@@ -209,15 +209,20 @@ def _raise_origin(exc: BaseException) -> dict[str, str]:
     globals, so it reads the same wherever the runtime is mounted; the line
     number is left out because it moves with every CHIRP pin, and a group
     should not.
+
+    Frames without a module are skipped. Pyodide can splice the JS stack of a
+    rejected promise into the traceback as frames of its own, named after
+    the script URL and with empty globals. Such a frame is never where Python
+    raised, and taking it split one failure into two issues by whichever JS
+    function was innermost: WEBCHIRP-FRONTEND-1X got the Sentry SDK's
+    wrapper ``r`` and -1Y got ``jsbridge._await_js``, for the same
+    "Port is not connected." on the same upload.
     """
-    frames = list(traceback.walk_tb(exc.__traceback__))
-    if not frames:
-        return {"module": "", "function": ""}
-    frame, _lineno = frames[-1]
-    return {
-        "module": str(frame.f_globals.get("__name__", "")),
-        "function": frame.f_code.co_name,
-    }
+    for frame, _lineno in reversed(list(traceback.walk_tb(exc.__traceback__))):
+        module = frame.f_globals.get("__name__")
+        if module:
+            return {"module": str(module), "function": frame.f_code.co_name}
+    return {"module": "", "function": ""}
 
 
 def rpc_error_envelope(exc: Exception) -> dict[str, Any]:
