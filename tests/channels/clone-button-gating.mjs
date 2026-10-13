@@ -203,7 +203,7 @@ test("a port lost before the connect's result arrives leaves the clone buttons o
     return { connected: true, transport: "webserial", message: "Connected at 9600 baud" };
   };
   serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
 
@@ -228,7 +228,7 @@ test("a port lost to a failed mid-clone settings change says so", async () => {
   const statuses = [];
   ctx.log.setStatus = (message) => statuses.push(message);
   const serial = createSerialActions(ctx);
-  serial.setSerialController({ capability: { supported: true, native: true }, setPreferredTransport() {} });
+  serial.setSerialController({ capability: { supported: true, native: true }, async choosePort() {} });
   serial.setSidebarControlsEnabled(true);
   serial.bindEvents();
   await pressConnectToggle(ctx);
