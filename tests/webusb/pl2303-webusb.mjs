@@ -223,6 +223,41 @@ test("HXN open() skips the legacy startup and uses HXN registers", async () => {
   assert.ok(vendorWrites.some((t) => t.value === 0x0a && t.index === 0xff));
 });
 
+for (const [chip, descriptor, hxProbeSucceeds] of [
+  ["HX", HX_DESCRIPTOR, true],
+  ["HXN", HXN_DESCRIPTOR, false],
+]) {
+  test(`${chip} open() deasserts DTR and RTS on the chip`, async () => {
+    // A new port object starts with a shadow of 0, but close() never touches
+    // the lines, so the chip can still hold DTR or RTS from an earlier
+    // session: open() has to write them rather than trust the shadow.
+    const { device, controlOut } = makeFakeDevice({ descriptor, hxProbeSucceeds });
+    const port = new Pl2303SerialPort(device);
+    await port.open({ baudRate: 9600 });
+
+    const controls = controlOut.filter((t) => t.request === 0x22);
+    assert.deepEqual(controls.map((t) => t.value), [0]);
+    assert.equal(controls[0].requestType, "class");
+    assert.equal(controls[0].recipient, "interface");
+  });
+}
+
+test("reopening a port deasserts the lines the last session asserted", async () => {
+  const { device, controlOut } = makeFakeDevice({ descriptor: HX_DESCRIPTOR });
+  const port = new Pl2303SerialPort(device);
+  await port.open({ baudRate: 9600 });
+  await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+  await port.close();
+  controlOut.length = 0;
+
+  await port.open({ baudRate: 9600 });
+  // With the shadow back at 0, asserting DTR again must reach the chip.
+  await port.setSignals({ dataTerminalReady: true });
+
+  const controls = controlOut.filter((t) => t.request === 0x22);
+  assert.deepEqual(controls.map((t) => t.value), [0, 0x01]);
+});
+
 test("setSignals sets absolute DTR|RTS value while preserving cached lines", async () => {
   const { device, controlOut } = makeFakeDevice({ descriptor: HX_DESCRIPTOR });
   const port = new Pl2303SerialPort(device);
