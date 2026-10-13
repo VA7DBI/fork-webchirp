@@ -83,6 +83,22 @@ export function createSerialActions(ctx: UiContext) {
   // waits for the transfer to end. A lost port still ends it promptly: the
   // bridge fails every read once the port is gone.
   let cloneRunning = false;
+  // A connect in flight, and a loss the bridge reported during it. The bridge
+  // reports a loss as soon as it happens, while the connect's own result is
+  // still on its way back through the runtime; dropped as "not connected",
+  // that report was overtaken by the result marking the lost port connected.
+  // It is held instead and applied once the result has been.
+  let connecting = false;
+  let lossDuringConnect: { deviceName?: string; reason?: string } | null = null;
+
+  // Hand over the loss held during a connect, if any, and forget it. A
+  // function rather than a read in place: handlePortLost() sets it while the
+  // connect is awaiting, which narrowing inside connectSerial() cannot see.
+  function takeLossDuringConnect(): { deviceName?: string; reason?: string } | null {
+    const loss = lossDuringConnect;
+    lossDuringConnect = null;
+    return loss;
+  }
 
   // Wire the serial bridge's transport controls (capability + forced transport)
   // so the UI can offer explicit WebUSB and WebBluetooth connect paths.
@@ -125,6 +141,8 @@ export function createSerialActions(ctx: UiContext) {
     }
     transportController?.setPreferredTransport(preferredTransport);
     setSerialButtonsBusy(true);
+    connecting = true;
+    lossDuringConnect = null;
     try {
       const baudRate = Number(state.selectedRadio?.baudRate || 9600);
       const transportLabel = preferredTransport === "webbluetooth"
@@ -158,6 +176,11 @@ export function createSerialActions(ctx: UiContext) {
         ...radioEventParams(state.selectedRadio),
         transport: transport || "unknown",
       });
+      // The connect did succeed; the port went after it. Said in that order.
+      const loss = takeLossDuringConnect();
+      if (loss) {
+        handlePortLost(loss.deviceName, loss.reason);
+      }
     } catch (error) {
       // A user who closes the browser's port picker lands here too; error_kind
       // separates that from an adapter the browser could not open.
@@ -207,6 +230,8 @@ export function createSerialActions(ctx: UiContext) {
       log.reportActionError("Serial connect", error);
       log.logSerial(`ERROR ${errorSummary(error)}`);
     } finally {
+      connecting = false;
+      lossDuringConnect = null;
       setSerialButtonsBusy(false);
       refreshSerialConnectToggleLabel();
       updateSerialActionState();
@@ -245,6 +270,9 @@ export function createSerialActions(ctx: UiContext) {
   // that is gone.
   function handlePortLost(deviceName: string | undefined, reason: string | undefined): void {
     if (!connected) {
+      if (connecting) {
+        lossDuringConnect = { deviceName, reason };
+      }
       return;
     }
     const lostTransport = transport || "unknown";
