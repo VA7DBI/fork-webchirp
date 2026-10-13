@@ -27,6 +27,7 @@ import type { RadioSessionHandle } from "./state.ts";
 
 const LIVE_RADIO_TITLE = "Live-mode radios are not supported in this UI yet";
 const NO_RADIO_SELECTED_TITLE = "Search for and select a radio first";
+const CLONE_RUNNING_TITLE = "A radio transfer is already running";
 // Shown when a clone is started on a browser without WebAssembly stack
 // switching: CHIRP's clone loops block on the serial bridge through Pyodide's
 // run_sync, which is the one thing in the app that needs JSPI.
@@ -63,6 +64,16 @@ export function createSerialActions(ctx: UiContext) {
   // Transport of the active connection, used to show one Disconnect button
   // while any serial transport is connected.
   let transport = "";
+  // Whether a download or upload is in flight, preflight included. Runtime
+  // calls run one at a time (enqueueRuntimeCall in web/js/runtime-rpc.ts), so
+  // nothing pressed meanwhile runs beside the transfer: it waits behind it.
+  // A second Download or Upload would start another transfer the moment this
+  // one ended, usually by timing out; a Disconnect could not interrupt it,
+  // only close the port after it; and a Connect after a port loss would open
+  // its chooser once the user's click had expired. So every serial control
+  // waits for the transfer to end. A lost port still ends it promptly: the
+  // bridge fails every read once the port is gone.
+  let cloneRunning = false;
 
   // Wire the serial bridge's transport controls (capability + forced transport)
   // so the UI can offer explicit WebUSB and WebBluetooth connect paths.
@@ -78,6 +89,13 @@ export function createSerialActions(ctx: UiContext) {
     dom.webbluetoothConnectToggleEl.disabled = busy;
   }
 
+  // Mark a transfer as started or finished and repaint the serial controls,
+  // so nothing can be queued behind a running transfer (see cloneRunning).
+  function setCloneRunning(running: boolean): void {
+    cloneRunning = running;
+    updateSerialActionState();
+  }
+
   // Record whether a clone can run here at all; web/app.ts decides from the
   // WebAssembly feature check and web/js/ui.ts passes it through init().
   function setCloneSupported(supported: boolean): void {
@@ -86,7 +104,9 @@ export function createSerialActions(ctx: UiContext) {
 
   // Connect using the requested transport ("auto", "webusb" or "webbluetooth").
   async function connectSerial(preferredTransport: string): Promise<void> {
-    if (connected) {
+    // A transfer still running after a port loss holds the toggles: a connect
+    // queued behind it would open its chooser after the click had expired.
+    if (connected || cloneRunning) {
       return;
     }
     if (!cloneSupported) {
@@ -185,6 +205,10 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   async function disconnectSerial() {
+    // Disconnect would only wait behind a running transfer, not stop it.
+    if (cloneRunning) {
+      return;
+    }
     setSerialButtonsBusy(true);
     try {
       log.setStatus("Disconnecting serial...");
@@ -329,6 +353,10 @@ export function createSerialActions(ctx: UiContext) {
     const selectionBlockedTitle = noRadioSelected
       ? NO_RADIO_SELECTED_TITLE
       : (liveRadioUnsupported ? LIVE_RADIO_TITLE : "");
+    // A running transfer outranks every other reason: it is why nothing here
+    // answers right now, and it clears by itself.
+    const blockedTitle = (cloneRunning ? CLONE_RUNNING_TITLE : "") || selectionBlockedTitle;
+    const togglesAllowed = actionsAllowed && !cloneRunning;
 
     setLiveRadioSupportWarningVisible(liveRadioUnsupported);
 
@@ -355,36 +383,37 @@ export function createSerialActions(ctx: UiContext) {
     }
 
     dom.serialConnectToggleEl.hidden = !showWebSerialToggle;
-    dom.serialConnectToggleEl.disabled = !actionsAllowed;
-    dom.serialConnectToggleEl.title = selectionBlockedTitle
+    dom.serialConnectToggleEl.disabled = !togglesAllowed;
+    dom.serialConnectToggleEl.title = blockedTitle
       || (!capability.supported ? "This browser has no supported serial transport API" : "")
       || (isAndroidPlatform()
         ? "Connect over native Web Serial, for use with Bluetooth serial ports"
         : "");
 
     dom.webusbConnectToggleEl.hidden = !showWebUsbToggle;
-    dom.webusbConnectToggleEl.disabled = !actionsAllowed;
-    dom.webusbConnectToggleEl.title = selectionBlockedTitle
+    dom.webusbConnectToggleEl.disabled = !togglesAllowed;
+    dom.webusbConnectToggleEl.title = blockedTitle
       || "Connect over WebUSB, for use with FTDI, Prolific PL2303, "
         + "WCH CH340/CH341 or Silicon Labs CP2102 adapters";
 
     dom.webbluetoothConnectToggleEl.hidden = !showWebBluetoothToggle;
-    dom.webbluetoothConnectToggleEl.disabled = !actionsAllowed;
-    dom.webbluetoothConnectToggleEl.title = selectionBlockedTitle
+    dom.webbluetoothConnectToggleEl.disabled = !togglesAllowed;
+    dom.webbluetoothConnectToggleEl.title = blockedTitle
       || "Connect over WebBluetooth to a BT-1AD programming dongle used with Ola Radio";
 
     // Both clone operations talk to an open port, so neither is offered until
-    // a port has been picked and opened through one of the connect buttons.
-    const cloneAllowed = actionsAllowed && connected;
+    // a port has been picked and opened through one of the connect buttons,
+    // nor while either of them is already running.
+    const cloneAllowed = togglesAllowed && connected;
     const notConnectedTitle = "Connect to a serial port first";
 
     dom.radioDownloadEl.disabled = !cloneAllowed;
-    dom.radioDownloadEl.title = selectionBlockedTitle
+    dom.radioDownloadEl.title = blockedTitle
       || (connected ? "" : notConnectedTitle);
 
     dom.radioUploadEl.disabled = !cloneAllowed || ctx.settings.hasInvalidSettings();
-    if (selectionBlockedTitle) {
-      dom.radioUploadEl.title = selectionBlockedTitle;
+    if (blockedTitle) {
+      dom.radioUploadEl.title = blockedTitle;
       return;
     }
     if (!connected) {
@@ -520,6 +549,11 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   async function downloadFromRadio() {
+    // The button is disabled while a transfer runs; this covers a press that
+    // reaches the handler anyway, and is neither reported nor queued.
+    if (cloneRunning) {
+      return;
+    }
     if (!state.selectedRadio) {
       log.setStatus("Search for and select a radio first.");
       return;
@@ -530,6 +564,7 @@ export function createSerialActions(ctx: UiContext) {
     const radio = state.selectedRadio;
     const session = ctx.session.current();
     const startedAt = Date.now();
+    setCloneRunning(true);
     try {
       trackRadioEvent("radio_download", radio);
       log.setStatus(`Downloading from ${makeModelLabel(radio)}...`);
@@ -581,10 +616,15 @@ export function createSerialActions(ctx: UiContext) {
       log.logSerial(`ERROR ${errorSummary(error)}`);
     } finally {
       endCloneProgress();
+      setCloneRunning(false);
     }
   }
 
   async function uploadToRadio() {
+    // As in downloadFromRadio(): one transfer at a time.
+    if (cloneRunning) {
+      return;
+    }
     if (!state.selectedRadio) {
       log.setStatus("Search for and select a radio first.");
       return;
@@ -598,6 +638,7 @@ export function createSerialActions(ctx: UiContext) {
     // Distinguishes a codeplug CHIRP itself rejected from a transfer that
     // reached the radio and failed there.
     let stage = "preflight";
+    setCloneRunning(true);
     try {
       trackRadioEvent("radio_upload", radio);
       log.setStatus("Running upload preflight validation...");
@@ -652,6 +693,7 @@ export function createSerialActions(ctx: UiContext) {
       log.logSerial(`ERROR ${errorSummary(error)}`);
     } finally {
       endCloneProgress();
+      setCloneRunning(false);
     }
   }
 
