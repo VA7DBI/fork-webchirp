@@ -16,10 +16,7 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   (`web/js/serial-bridge.ts`, no DOM or navigator) owns buffering, clone
   preparation, re-rating and reconfigure for both environments, given a
   transport factory: `web/js/serial.ts` adds the browser chooser,
-  `tests/support/radio-harness.mjs` the tty. The UI shows the chooser from
-  the Connect click itself (`choosePort`), before any await: the browser
-  refuses one once the click's user activation (~5 s) has lapsed, and the
-  connect's `open()` waits on the runtime call queue. `web/js/serial-globals.ts`
+  `tests/support/radio-harness.mjs` the tty. `web/js/serial-globals.ts`
   installs the `serial_*` globals Python imports (declared in
   `web/python/typings/js.pyi`) for both. A transport that cannot do something
   declares it in `capabilities`; the bridge never probes.
@@ -261,6 +258,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
     call `_losePort()`, never `_teardown()` alone. It reports `onPortLost`
     once, before awaiting the transport's close; that report is the only way
     the UI learns the port is gone.
+  - Show a port chooser only from the click that asks for it, before that
+    handler's first await: Connect calls `BrowserSerialBridge.choosePort()`,
+    and `open()` takes the port it picked. Never make a chooser wait on the
+    runtime call queue.
 
 ## Agent CLI
 - For agent-operated real-radio reads, use `npm run radio:read -- --port <path> --module <driver_module> --class <driver_class> --format json|csv|img --output <file>`.
