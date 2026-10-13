@@ -89,35 +89,136 @@ export function isFtdiDevice(device: Partial<USBDevice> | null | undefined): boo
   return !!device && Number(device.vendorId) === FTDI_VENDOR_ID;
 }
 
-// Port of libftdi ftdi_to_clkbits / ftdi_convert_baudrate for the FT232R / FT-X
-// family (3 MHz effective base clock). Returns the wValue/wIndex pair for the
-// SIO_SET_BAUD_RATE control request.
-export function ftdiConvertBaudrate(baudrate: number): { value: number; index: number } {
+// How a chip turns a baud rate into a divisor: "am" is the FT8U232AM (four
+// fractions, 16-bit divisor), "bm" the FT232BM, FT2232C, FT232R and FT-X (48
+// MHz / 16, 17-bit divisor), "h" the hi-speed parts (120 MHz / 10 as well,
+// divisor bit 16 moved to wIndex bit 8). These are libftdi's three paths.
+export type FtdiBaudFamily = "am" | "bm" | "h";
+
+// The bcdDevice of every hi-speed part: libftdi's FT2232H, FT4232H and FT232H,
+// plus the HP/HA parts the kernel's ftdi_determine_type() adds after them and
+// sends down the same hi-speed path.
+const FTDI_HI_SPEED_BCD_DEVICES = new Set([
+  0x0700, 0x0800, 0x0900, 0x2800, 0x2900, 0x3000, 0x3100, 0x3200, 0x3300, 0x3600,
+]);
+
+// The divisor family of a device, read from bcdDevice as libftdi's
+// ftdi_usb_open_dev() does: no FTDI product id says which chip is behind it,
+// and the families lay SIO_SET_BAUD_RATE out differently (see
+// ftdiConvertBaudrate). WebUSB splits the word as Chromium's UsbDevice does (major is the whole high
+// byte, minor and subminor a nibble each), so it reassembles exactly. 0x0200
+// is an AM only with a serial number: an FT232BM whose iSerialNumber is 0
+// reports 0x0200 too, a silicon bug libftdi and the kernel both work around.
+// Anything unrecognised keeps the FT232R/FT-X divisor, as libftdi does.
+export function ftdiBaudFamily(device: Partial<USBDevice>): FtdiBaudFamily {
+  const bcdDevice = (Number(device.deviceVersionMajor) << 8)
+    | ((Number(device.deviceVersionMinor) & 0x0f) << 4)
+    | (Number(device.deviceVersionSubminor) & 0x0f);
+  if (FTDI_HI_SPEED_BCD_DEVICES.has(bcdDevice)) {
+    return "h";
+  }
+  if (bcdDevice === 0x0200 && device.serialNumber) {
+    return "am";
+  }
+  return "bm";
+}
+
+// FTDI's sub-integer divisor codes: an eighth-step fraction (the index) as the
+// three bits the chip expects at divisor bits 14-16.
+const FTDI_FRAC_CODE = [0, 3, 2, 4, 1, 5, 6, 7];
+
+// Port of libftdi ftdi_to_clkbits(): the encoded divisor for a base clock
+// `clk` divided by `clkDiv`, before it is split into wValue and wIndex.
+function ftdiToClkbits(baud: number, clk: number, clkDiv: number): number {
+  if (baud >= clk / clkDiv) {
+    return 0;
+  }
+  if (baud >= clk / (clkDiv + clkDiv / 2)) {
+    return 1; // special divisor 1.5
+  }
+  if (baud >= clk / (2 * clkDiv)) {
+    return 2; // special divisor 2
+  }
+  // Eighths of the divisor, plus one more bit to round on.
+  const divisor = Math.floor((clk * 16) / clkDiv / baud);
+  let bestDivisor = divisor & 1 ? (divisor >> 1) + 1 : divisor >> 1;
+  if (bestDivisor > 0x20000) {
+    bestDivisor = 0x1ffff;
+  }
+  return (bestDivisor >> 3) | (FTDI_FRAC_CODE[bestDivisor & 0x7] << 14);
+}
+
+// Port of libftdi ftdi_to_clkbits_AM(): the FT8U232AM can add only 0, 1/8, 1/4
+// or 1/2 to its divisor, so the eighth-step divisor is rounded down to one of
+// those, and the candidate above it is tried in case it lands closer.
+function ftdiToClkbitsAm(baud: number): number {
+  const amAdjustUp = [0, 0, 0, 1, 0, 3, 2, 1];
+  const amAdjustDown = [0, 0, 0, 1, 0, 1, 2, 3];
+  let divisor = Math.floor(24000000 / baud);
+  divisor -= amAdjustDown[divisor & 7];
+
+  let bestDivisor = 0;
+  let bestBaudDiff = 0;
+  for (let i = 0; i < 2; i++) {
+    let tryDivisor = divisor + i;
+    if (tryDivisor <= 8) {
+      tryDivisor = 8; // the smallest divisor the chip takes
+    } else if (tryDivisor < 16) {
+      tryDivisor = 16; // the AM has no divisors 9 to 15
+    } else {
+      tryDivisor += amAdjustUp[tryDivisor & 7];
+      if (tryDivisor > 0x1fff8) {
+        tryDivisor = 0x1fff8; // the largest divisor the AM takes
+      }
+    }
+    const baudEstimate = Math.floor((24000000 + Math.floor(tryDivisor / 2)) / tryDivisor);
+    const baudDiff = Math.abs(baudEstimate - baud);
+    if (i === 0 || baudDiff < bestBaudDiff) {
+      bestDivisor = tryDivisor;
+      bestBaudDiff = baudDiff;
+      if (baudDiff === 0) {
+        break;
+      }
+    }
+  }
+  const encoded = (bestDivisor >> 3) | (FTDI_FRAC_CODE[bestDivisor & 7] << 14);
+  if (encoded === 1) {
+    return 0; // 3000000 baud
+  }
+  return encoded === 0x4001 ? 1 : encoded;
+}
+
+// Port of libftdi ftdi_convert_baudrate(): the wValue/wIndex pair of the
+// SIO_SET_BAUD_RATE control request for a chip of the given family. The
+// default is the FT232R/FT-X family the driver was written against.
+export function ftdiConvertBaudrate(
+  baudrate: number,
+  family: FtdiBaudFamily = "bm",
+): { value: number; index: number } {
   const baud = Number(baudrate);
   if (!Number.isFinite(baud) || baud <= 0) {
     throw new Error(`Invalid FTDI baud rate: ${baudrate}`);
   }
 
-  const fracCode = [0, 3, 2, 4, 1, 5, 6, 7];
-  const clk = 48000000;
-  const clkDiv = 16; // clk / clkDiv == 3 MHz
-
-  let encodedDivisor;
-  if (baud >= clk / clkDiv) {
-    encodedDivisor = 0;
-  } else if (baud >= clk / (clkDiv + clkDiv / 2)) {
-    encodedDivisor = 1; // special divisor 1.5
-  } else if (baud >= clk / (2 * clkDiv)) {
-    encodedDivisor = 2; // special divisor 2
-  } else {
-    let divisor = Math.floor((clk * 16) / clkDiv / baud);
-    let bestDivisor = divisor & 1 ? (divisor >> 1) + 1 : divisor >> 1;
-    if (bestDivisor > 0x20000) {
-      bestDivisor = 0x1ffff;
-    }
-    encodedDivisor = (bestDivisor >> 3) | (fracCode[bestDivisor & 0x7] << 14);
+  if (family === "h") {
+    // Left alone, a hi-speed chip divides its 120 MHz by 2.5 and then 16: the
+    // 3 MHz the older parts use. Bit 17 turns the 2.5 off for 120 MHz / 10,
+    // used wherever its 14-bit divisor reaches the rate (from 733 baud up);
+    // slower rates keep 48 MHz / 16. Either way divisor bit 16 rides in wIndex
+    // bit 8, because the low byte names the port (A here, as for every other
+    // request).
+    const encodedDivisor = baud * 10 > Math.floor(120000000 / 0x3fff)
+      ? ftdiToClkbits(baud, 120000000, 10) | 0x20000
+      : ftdiToClkbits(baud, 48000000, 16);
+    return {
+      value: encodedDivisor & 0xffff,
+      index: ((encodedDivisor >> 8) & 0xff00) | PORT_INDEX,
+    };
   }
 
+  const encodedDivisor = family === "am"
+    ? ftdiToClkbitsAm(baud)
+    : ftdiToClkbits(baud, 48000000, 16);
   return {
     value: encodedDivisor & 0xffff,
     index: (encodedDivisor >> 16) & 0xffff,
@@ -224,7 +325,7 @@ export class FtdiSerialPort extends WebUsbTransport implements SerialTransport {
     // misread as protocol responses (mirrors native driver init).
     await this._controlOut(SIO_RESET, SIO_RESET_PURGE_RX, PORT_INDEX);
     await this._controlOut(SIO_RESET, SIO_RESET_PURGE_TX, PORT_INDEX);
-    const baud = ftdiConvertBaudrate(baudRate);
+    const baud = ftdiConvertBaudrate(baudRate, ftdiBaudFamily(this.device));
     await this._controlOut(SIO_SET_BAUD_RATE, baud.value, baud.index);
     await this._controlOut(SIO_SET_DATA, ftdiDataValue(framing), PORT_INDEX);
     await this._controlOut(SIO_SET_FLOW_CTRL, 0x0000, PORT_INDEX);
