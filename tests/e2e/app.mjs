@@ -103,6 +103,41 @@ test("a 1,000-channel CSV keeps only a window of rows in the DOM, and scrolling 
   expect(problems).toEqual([]);
 });
 
+// Issue #262: a short scroll partway down a long codeplug used to keep going on
+// its own until the last channel. Scroll anchoring pinned a recycled row
+// element, saw it pushed down by the growing spacer above it, and scrolled
+// after it, which moved the window again. The jump to the end above cannot
+// show this: there is no further to go.
+test("a short scroll partway down a long codeplug stays where it was left", async ({ page }) => {
+  const problems = watchConsole(page);
+  await openApp(page);
+  await selectRadio(page);
+
+  await page.locator("#codeplug-file").setInputFiles(CSV_FIXTURE);
+  await page.waitForFunction(() => globalThis.currentRows?.length === 1000);
+
+  const viewport = page.locator("#mem-table-scroll");
+  // Far enough down that the window has left row 0, so its spacer has height.
+  await viewport.evaluate((element) => {
+    element.scrollTop = 3000;
+  });
+  await expect(renderedRows(page).first()).not.toHaveAttribute("data-row-idx", "0");
+
+  // The step a finger or wheel makes, then enough frames for the grid to
+  // re-window several times over if anything keeps moving it.
+  const positions = await viewport.evaluate(async (element) => {
+    element.scrollTop += 100;
+    const seen = [element.scrollTop];
+    for (let frame = 0; frame < 30; frame += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      seen.push(element.scrollTop);
+    }
+    return seen;
+  });
+  expect(new Set(positions), "scrollTop moved after the scroll ended").toEqual(new Set([positions[0]]));
+  expect(problems).toEqual([]);
+});
+
 test("the RSGB query imports repeaters from a routed answer, never the real API", async ({ page }) => {
   const problems = watchConsole(page);
   const thirdParty = watchThirdPartyRequests(page);

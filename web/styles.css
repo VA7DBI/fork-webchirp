@@ -1296,9 +1296,17 @@ button:disabled {
   flex-direction: column;
 }
 
+/* No scroll anchoring: the grid recycles its row elements by position
+   (web/js/ui/channel-table.ts), so after a scroll the spacer above them grows
+   by the rows that left the window and every row element moves down to show
+   a later channel. Anchoring reads that as content inserted above the row it
+   pinned and scrolls down by the same amount, which fires another scroll,
+   which moves the window again: the grid scrolled on by itself until the last
+   channel (issue #262). The spacers already keep the scroll position right. */
 .mem-table-scroll {
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   flex: 1 1 auto;
 }
 
