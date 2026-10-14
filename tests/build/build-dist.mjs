@@ -58,6 +58,7 @@ const REQUIRED_FILES = {
   "images/apple-touch-icon.png": "",
   "images/screenshot-narrow.png": "",
   "images/screenshot-wide.png": "",
+  ".well-known/assetlinks.json": "[]\n",
   ...Object.fromEntries(CHIRP_BUNDLE_FILES.map((rel) => [rel, "not a real archive\n"])),
 };
 
@@ -396,6 +397,18 @@ test("a missing CHIRP archive fails the build", async () => {
     delete files[CHIRP_BUNDLE_FILES[0]];
     await writeTree(path.join(dir, "web"), files);
     await assert.rejects(runBuild(dir), new RegExp(`Missing required dist asset: ${CHIRP_BUNDLE_FILES[0]}`));
+  });
+});
+
+// The one required file under a dot-directory, so this also pins that the
+// verbatim copy walks into .well-known/ rather than skipping hidden entries:
+// every other test here builds with it present and would fail if it did not.
+test("a missing Digital Asset Links file fails the build", async () => {
+  await withTempDir("build-dist-", async (dir) => {
+    const files = { ...REQUIRED_FILES, ...appTree("export const leaf = 1;\n") };
+    delete files[".well-known/assetlinks.json"];
+    await writeTree(path.join(dir, "web"), files);
+    await assert.rejects(runBuild(dir), /Missing required dist asset: \.well-known\/assetlinks\.json/);
   });
 });
 

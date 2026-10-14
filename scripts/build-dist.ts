@@ -23,7 +23,8 @@
 //     are named after the pin, so they are copied as they are, required, and
 //     listed in the asset manifest for retention.
 //   * Everything else -- the web manifest and icons, the radio catalogs,
-//     version.json, sitemap.xml, robots.txt, favicon -- is copied verbatim.
+//     version.json, sitemap.xml, robots.txt, favicon, .well-known/ -- is
+//     copied verbatim.
 //   * Pyodide (and its wasm and stdlib, through PYODIDE_INDEX_URL), the
 //     Sentry SDK and the web-serial polyfill stay on jsDelivr; their URLs are
 //     external, so the bundle never fetches them and the two lazy ones stay
@@ -93,6 +94,11 @@ const REQUIRED_WEB_FILES = [
   // it back, which no page load reveals.
   "images/screenshot-narrow.png",
   "images/screenshot-wide.png",
+  // The Digital Asset Links statement that lets the Android app open the site
+  // full-screen as a Trusted Web Activity. Android reads it only from the
+  // origin's root, and without it every installed copy silently falls back to
+  // showing a URL bar, which nothing on the web side reveals.
+  ".well-known/assetlinks.json",
   // Without the archive the runtime cannot boot at all, but the page itself
   // loads and shows the catalog, so a deploy that forgot to build it looks
   // fine until the first radio is selected.
