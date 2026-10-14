@@ -17,6 +17,10 @@ const HANDLE_ALL_URLS = "delegate_permission/common.handle_all_urls";
 // An Android application id: two or more dot-separated identifiers, each
 // starting with a letter.
 const PACKAGE_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+// The Play Store app's application id. Play never lets a published app change
+// it, so the statement must keep naming exactly this one; pinned here so that
+// editing it is a deliberate change in two places, not a slip in one.
+const ANDROID_APP_ID = "com.hf2j.webchirp";
 // A SHA-256 certificate digest as keytool and Play Console print it: 32
 // upper-case hex bytes joined by colons.
 const FINGERPRINT_RE = /^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/;
@@ -40,6 +44,10 @@ test("assetlinks.json delegates URL handling to an Android app", () => {
       `${statement.target.package_name}: sha256_cert_fingerprints must be an array`,
     );
   }
+  assert.ok(
+    list.some((statement) => statement.target.package_name === ANDROID_APP_ID),
+    `assetlinks.json does not name the Play Store app ${ANDROID_APP_ID}`,
+  );
 });
 
 // An empty list is allowed: it verifies no build of the app, which is the

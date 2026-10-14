@@ -280,8 +280,8 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - `web/.well-known/assetlinks.json` is the Digital Asset Links statement for the
   Android app (a Trusted Web Activity over the site). The build requires it and
   `tests/build/asset-links.mjs` checks it. Its `package_name` must equal the
-  Android app's application id, and its fingerprints must include the Play App
-  Signing key's SHA-256, not only the upload key's.
+  Android app's application id, `com.hf2j.webchirp`, and its fingerprints must
+  include the Play App Signing key's SHA-256, not only the upload key's.
 - We do not aim to support screen readers at this time.
 
 ## Change Process
