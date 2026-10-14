@@ -69,21 +69,29 @@ test("every certificate fingerprint is a SHA-256 digest", () => {
   }
 });
 
-// upload-pages-artifact up to v3 tars everything but .git and .github; v4.0.0
-// stopped including dot-prefixed files and directories unless
-// include-hidden-files is true. A bump that misses it deploys a site with no
-// .well-known/ while every build check still passes, because dist/ has it.
+// upload-pages-artifact up to v3 tars everything but .git and .github. v4
+// leaves out dot-prefixed files and directories with no way to keep them, and
+// v5 keeps them only with include-hidden-files: true. A bump that loses them
+// deploys a site with no .well-known/ while every build check still passes,
+// because dist/ has it. The major version decides which rule applies, so a
+// ref that does not name one (a commit SHA) is refused rather than guessed.
 test("the Pages artifact keeps dot-directories, so .well-known/ is deployed", () => {
   const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "pages.yml"), "utf8");
   const uploads = workflow.split("uses: actions/upload-pages-artifact@").slice(1);
   assert.equal(uploads.length, 1, "pages.yml should upload exactly one Pages artifact");
   // The step's with: block ends at the next step.
   const step = uploads[0].split(/\n\s*- /)[0];
-  if (!/^v[1-3]\b/.test(step)) {
+  const major = Number(step.match(/^v(\d+)\b/)?.[1]);
+  assert.ok(
+    Number.isInteger(major),
+    "pin upload-pages-artifact to a vN tag, so this test can tell whether it keeps .well-known/",
+  );
+  assert.notEqual(major, 4, "upload-pages-artifact v4 drops .well-known/ and cannot be told to keep it");
+  if (major >= 5) {
     assert.match(
       step,
       /include-hidden-files: true/,
-      "upload-pages-artifact v4+ drops .well-known/ unless include-hidden-files is true",
+      "upload-pages-artifact v5+ drops .well-known/ unless include-hidden-files is true",
     );
   }
 });
