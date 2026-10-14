@@ -14,7 +14,7 @@ import {
 import { FLOWS, OUTCOMES, recordFlow } from "./metrics.ts";
 import { requireRuntimeApi } from "./state.ts";
 import type { UiContext } from "../types/ui-context.js";
-import type { UiState } from "./state.ts";
+import type { RadioSessionHandle, UiState } from "./state.ts";
 import type { ParsedCsv } from "../runtime-rpc.ts";
 
 const LOADABLE_FILE_KINDS = new Map([
@@ -105,10 +105,30 @@ export function createCodeplugIo(ctx: UiContext) {
     });
   }
 
-  // Parse CSV through Python runtime and refresh table rows and status text.
-  async function parseCsvViaRuntime(csvText: string) {
+  // Parse CSV through the Python runtime for the radio selected when the parse
+  // answers. The rows are imported into that radio, so its session goes along
+  // and each channel's power comes back as one of its levels; a parse made for
+  // a radio the user has since left is made again for the current one, rather
+  // than applying another radio's labels. A failure counts only while its
+  // radio is still selected: one whose session was closed under it retries.
+  async function parseCsvForCurrentRadio(
+    csvText: string,
+  ): Promise<{ parsed: ParsedCsv; session: RadioSessionHandle | null }> {
     log.setStatus("Parsing CSV with CHIRP Python...");
-    return requireRuntimeApi(state).parseCsv({ csvText });
+    for (;;) {
+      const session = ctx.session.current();
+      try {
+        const sessionId = await ctx.session.idOf(session);
+        const parsed = await requireRuntimeApi(state).parseCsv({ csvText, sessionId });
+        if (ctx.session.isCurrent(session)) {
+          return { parsed, session };
+        }
+      } catch (error) {
+        if (ctx.session.isCurrent(session)) {
+          throw error;
+        }
+      }
+    }
   }
 
   // Apply a parsed CSV to the editor: "replace" swaps the channel list out
@@ -149,10 +169,13 @@ export function createCodeplugIo(ctx: UiContext) {
     const issues = parsed.errors.length
       ? ` (${parsed.errors.length} parse warnings)`
       : "";
+    // Each adjusted channel is in Debug Output; the status only says it happened.
+    const adjusted = Number(parsed.powerAdjusted) || 0;
+    const power = adjusted ? ` Power set to this radio's closest level on ${adjusted}.` : "";
     if (mode === "merge") {
-      log.setStatus(`Merged ${imported.length} imported channel(s); ${state.currentRows.length} total${issues}.`);
+      log.setStatus(`Merged ${imported.length} imported channel(s); ${state.currentRows.length} total${issues}.${power}`);
     } else {
-      log.setStatus(`Loaded ${state.currentRows.length} channel(s)${issues}.`);
+      log.setStatus(`Loaded ${state.currentRows.length} channel(s)${issues}.${power}`);
     }
   }
 
@@ -182,7 +205,8 @@ export function createCodeplugIo(ctx: UiContext) {
   // Load a CSV file into the editor, asking first when doing so would discard
   // channels the user already has. Shared by the Load button and drops.
   async function importCsvFile(file: File, source = "button"): Promise<void> {
-    const parsed = await parseCsvViaRuntime(await file.text());
+    const csvText = await file.text();
+    let { parsed, session } = await parseCsvForCurrentRadio(csvText);
     let mode: "replace" | "merge" = "replace";
     if (ctx.table.hasRealChannels()) {
       const choice = await askImportChoice(
@@ -196,6 +220,11 @@ export function createCodeplugIo(ctx: UiContext) {
         return;
       }
       mode = choice;
+      // The prompt waits on the user, who may have picked another radio
+      // meanwhile; the answer still holds, the parsed power levels do not.
+      if (!ctx.session.isCurrent(session)) {
+        ({ parsed, session } = await parseCsvForCurrentRadio(csvText));
+      }
     }
     applyParsedCsv(parsed, mode);
     trackCodeplugImport("csv", source, mode);
@@ -290,8 +319,8 @@ export function createCodeplugIo(ctx: UiContext) {
     const imageSession = ctx.session.current();
     // Rows first, then the schema built from them: the session holds this
     // image, so the metadata call below reports the detected driver as the
-    // image configures it, and the row check it runs (dropUnsupportedPowerValues
-    // in web/js/ui/channel-table.ts) has to measure this file's channels rather
+    // image configures it, and the row check it runs (adoptPowerLevels in
+    // web/js/ui/channel-table.ts) has to measure this file's channels rather
     // than whatever the grid still held from before the import.
     //
     // Undone if that call fails, because everything that agrees with these rows

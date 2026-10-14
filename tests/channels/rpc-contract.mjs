@@ -152,7 +152,7 @@ test("a dispatched call leaves nothing behind in the interpreter globals", async
   const harness = await sharedHarness();
   const before = await harness.runPythonJson("json.dumps(sorted(globals()))");
   await harness.rpc("get_default_schema");
-  await harness.rpc("parse_csv", { csv_text: "Location,Name,Frequency\n0,Test,145.500000\n" });
+  await harness.rpc("parse_csv", { csv_text: "Location,Name,Frequency\n0,Test,145.500000\n", session_id: "" });
   const seen = [];
   await harness.rpc("import_all_driver_modules", {
     module_short_names: ["h777"],
@@ -173,14 +173,14 @@ test("a call that does not match the contract is refused before it crosses", asy
   assert.throws(() => prepareRpcCall("no_such_method", {}), /Unknown RPC method no_such_method/);
   assert.throws(
     () => prepareRpcCall("parse_csv", {}),
-    /parse_csv takes \(csv_text\), got \(\)/,
+    /parse_csv takes \(csv_text, session_id\), got \(\)/,
   );
   assert.throws(
     () => prepareRpcCall("parse_csv", { csv_text: "", extra: 1 }),
-    /parse_csv takes \(csv_text\), got \(csv_text, extra\)/,
+    /parse_csv takes \(csv_text, session_id\), got \(csv_text, extra\)/,
   );
   assert.throws(
-    () => prepareRpcCall("parse_csv", { csv_text: "", callback: () => {} }),
+    () => prepareRpcCall("parse_csv", { csv_text: "", session_id: "", callback: () => {} }),
     /parse_csv takes no callback/,
   );
   assert.throws(

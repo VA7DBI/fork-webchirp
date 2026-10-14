@@ -21,9 +21,12 @@ from chirp.drivers.generic_csv import CSVRadio
 
 from webchirp_bridge.jsbridge import _log_debug
 from webchirp_bridge.power_levels import (
+    _closest_power_label,
     _csv_export_power_text,
     _power_label_map_from_features,
+    _power_levels_by_label,
     _resolve_power_level,
+    _valid_power_levels_for_driver,
 )
 from webchirp_bridge.runtime_errors import RuntimeUnsupportedError
 from webchirp_bridge.session import resolve_optional_session
@@ -99,21 +102,45 @@ def _row_from_memory(mem: chirp_common.Memory) -> Row:
     return dict(zip(CSV_HEADERS, _row_text_values(mem)))
 
 
-def parse_csv(csv_text: str) -> dict[str, Any]:
-    """Parse CSV content with CHIRP's CSV driver and return row dictionaries."""
+def parse_csv(csv_text: str, session_id: str = "") -> dict[str, Any]:
+    """RPC: parse CSV content with CHIRP's CSV driver and return row dictionaries.
+
+    With a session, the rows are being imported into that radio, so each
+    channel's power becomes one of its levels, as desktop CHIRP's import makes
+    it (``_closest_power_label``); ``powerAdjusted`` counts the channels moved
+    to a different level, each logged to the debug panel. An empty
+    ``session_id`` means no radio is selected, and the rows keep the CSV
+    driver's own watt values.
+    """
+    levels = _valid_power_levels_for_driver(resolve_optional_session(session_id))
+    # What the radio already calls one of its levels, by label or by watts:
+    # relabelled without counting as an adjustment.
+    own_levels = _power_levels_by_label(levels)
     radio = _blank_csv_radio()
     radio.load_from(csv_text)
     rows: Rows = []
+    power_adjusted = 0
 
     for mem in radio.memories:
         if mem.empty:
             continue
-        rows.append(_row_from_memory(mem))
+        row = _row_from_memory(mem)
+        label = _closest_power_label(row["Power"], levels)
+        if label is not None:
+            if row["Power"] not in own_levels:
+                power_adjusted += 1
+                _log_debug(
+                    f"CSV IMPORT channel={row['Location']} Power {row['Power']} -> {label}: "
+                    "the closest level this radio has"
+                )
+            row["Power"] = label
+        rows.append(row)
 
     return {
         "headers": CSV_HEADERS,
         "rows": rows,
         "errors": list(radio.errors),
+        "powerAdjusted": power_adjusted,
     }
 
 

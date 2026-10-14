@@ -3,7 +3,9 @@
 Drivers advertise power as ``PowerLevel`` objects whose labels and wattages
 vary per radio, the grid and CSV carry a string, and the two have to be
 reconciled in both directions without guessing: a label the radio does not
-have must fail validation rather than silently pick a neighbour. Everything
+have must fail validation rather than silently pick a neighbour. The one
+exception is a CSV imported into a selected radio, which takes the closest
+level the way desktop CHIRP's import does (``_closest_power_label``). Everything
 that maps between those representations is collected here so the CSV
 import/export path, the upload preflight and the column metadata agree on
 the mapping.
@@ -14,12 +16,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 
-from chirp import chirp_common
+from chirp import chirp_common, import_logic
 
 from webchirp_bridge.runtime_errors import RuntimeUnsupportedError
 
 if TYPE_CHECKING:
-    from typing import Any, Iterable, Optional
+    from typing import Any, Iterable, Optional, Sequence
     from webchirp_bridge.session import RadioSession
 
 DEFAULT_EXPORT_POWER = "50W"
@@ -123,6 +125,35 @@ def _resolve_power_level(
     raise RuntimeUnsupportedError(
         f"Power {text!r} is not supported by this radio; valid values: {valid}"
     )
+
+
+def _closest_power_label(power_text: Any, levels: Sequence[chirp_common.PowerLevel]) -> Optional[str]:
+    """The driver label a CSV channel's power is imported as, or None to keep the text.
+
+    Desktop CHIRP imports into a radio through ``import_logic._import_power``,
+    which turns a level the radio does not have into its closest one in watts:
+    a 5W channel lands on a 1W/20W/50W radio as its 1W level. This is that
+    step for the grid's rows, and it applies to a CSV import only: a value the
+    user types still has to be one the radio has (``_resolve_power_level``).
+    A level the radio has comes back as its own label ("50W" as "H"), since
+    rows carry labels. None for blank or "None" (no level chosen), for text
+    CHIRP cannot read as watts, and for a radio with no levels: the row keeps
+    its text and the per-edit check judges it.
+    """
+    text = str(power_text or "").strip()
+    if not levels or not text or text == "None":
+        return None
+    exact = _power_levels_by_label(levels).get(text)
+    if exact is not None:
+        return str(exact)
+    try:
+        power = chirp_common.parse_power(text)
+    except Exception:
+        return None
+    # CHIRP's own expression, int() truncation included, so the choice matches
+    # what desktop CHIRP would make for the same file.
+    watts = chirp_common.dBm_to_watts(int(power))
+    return str(import_logic.find_closest_power(watts, list(levels)))
 
 
 def _power_label_map_for_radio(session: Optional[RadioSession]) -> tuple[dict[str, str], str]:

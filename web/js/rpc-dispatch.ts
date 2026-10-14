@@ -80,7 +80,7 @@ export const RPC_METHODS = Object.freeze({
   get_default_schema: Object.freeze([]),
   get_radio_column_metadata: Object.freeze(["session_id"]),
   // web/python/webchirp_bridge/channel_rows.py
-  parse_csv: Object.freeze(["csv_text"]),
+  parse_csv: Object.freeze(["csv_text", "session_id"]),
   normalize_rows: Object.freeze(["rows", "session_id"]),
   // web/python/webchirp_bridge/row_validation.py
   validate_rows_for_upload: Object.freeze(["rows", "session_id"]),

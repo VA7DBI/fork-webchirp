@@ -97,8 +97,13 @@ function normalizeJsonCodeplug(parsed: any) {
   return parsed;
 }
 
-async function parseCsvToRows(harness: TestRadioHarness, csvText: string) {
-  const parsed = await harness.rpc("parse_csv", { csv_text: String(csvText || "") });
+// Parse a CSV as the app imports one into the radio it will be written to, so
+// each channel's power becomes one of that radio's levels.
+async function parseCsvToRows(harness: TestRadioHarness, csvText: string, moduleName: string, className: string) {
+  const parsed = await harness.rpc("parse_csv", {
+    csv_text: String(csvText || ""),
+    session_id: await harness.session(moduleName, className),
+  });
   return {
     rows: parsed.rows || [],
     headers: parsed.headers || [],
@@ -149,7 +154,7 @@ async function runWriteCommand(
   }
 
   if (format === "csv") {
-    const parsed = await parseCsvToRows(harness, await readUtf8(inputPath));
+    const parsed = await parseCsvToRows(harness, await readUtf8(inputPath), moduleName, className);
     if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
       throw new Error(`CSV parse errors: ${parsed.errors.join("; ")}`);
     }
