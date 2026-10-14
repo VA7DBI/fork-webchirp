@@ -202,6 +202,12 @@ export interface ParsedCsv {
   headers: string[];
   rows: ChannelRow[];
   errors: string[];
+  /**
+   * How many channels' power was moved to the selected radio's closest level
+   * (_closest_power_label in web/python/webchirp_bridge/power_levels.py); 0,
+   * or absent, with no radio selected.
+   */
+  powerAdjusted?: number;
 }
 
 /** A codeplug read out of a radio instance (_read_radio_payload). */
@@ -616,11 +622,14 @@ async function handleGetDefaultSchema(): Promise<RadioMetadata> {
 }
 
 /**
+ * @param payload.sessionId The radio the rows are imported into, whose power
+ *   levels they take; empty with no radio selected.
  * @returns The rows and headers parse_csv found.
  */
-async function handleParseCsv(payload: { csvText?: string } = {}): Promise<ParsedCsv> {
-  await requirePyodide();
-  return rpc<ParsedCsv>("parse_csv", { csv_text: String(payload.csvText ?? "") });
+async function handleParseCsv(payload: { csvText?: string; sessionId?: string } = {}): Promise<ParsedCsv> {
+  return optionalSessionRpc<ParsedCsv>(payload.sessionId, "parse_csv", {
+    csv_text: String(payload.csvText ?? ""),
+  });
 }
 
 // Open a radio session for a catalog entry: import its driver (which, under

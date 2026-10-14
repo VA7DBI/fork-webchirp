@@ -106,9 +106,11 @@ export function createCodeplugIo(ctx: UiContext) {
   }
 
   // Parse CSV through Python runtime and refresh table rows and status text.
+  // The rows are imported into the selected radio, so its session goes along:
+  // each channel's power comes back as one of that radio's levels.
   async function parseCsvViaRuntime(csvText: string) {
     log.setStatus("Parsing CSV with CHIRP Python...");
-    return requireRuntimeApi(state).parseCsv({ csvText });
+    return requireRuntimeApi(state).parseCsv({ csvText, sessionId: await ctx.session.currentId() });
   }
 
   // Apply a parsed CSV to the editor: "replace" swaps the channel list out
@@ -149,10 +151,13 @@ export function createCodeplugIo(ctx: UiContext) {
     const issues = parsed.errors.length
       ? ` (${parsed.errors.length} parse warnings)`
       : "";
+    // Each adjusted channel is in Debug Output; the status only says it happened.
+    const adjusted = Number(parsed.powerAdjusted) || 0;
+    const power = adjusted ? ` Power set to this radio's closest level on ${adjusted}.` : "";
     if (mode === "merge") {
-      log.setStatus(`Merged ${imported.length} imported channel(s); ${state.currentRows.length} total${issues}.`);
+      log.setStatus(`Merged ${imported.length} imported channel(s); ${state.currentRows.length} total${issues}.${power}`);
     } else {
-      log.setStatus(`Loaded ${state.currentRows.length} channel(s)${issues}.`);
+      log.setStatus(`Loaded ${state.currentRows.length} channel(s)${issues}.${power}`);
     }
   }
 

@@ -16,6 +16,7 @@
 // Every runtime method that names a session. Kept in step with RUNTIME_METHODS
 // in web/js/runtime-rpc.ts.
 const SESSION_BOUND_METHODS = [
+  "parseCsv",
   "normalizeRows",
   "validateRowsForUpload",
   "normalizeAndValidateRows",
