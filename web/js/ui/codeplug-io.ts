@@ -319,8 +319,8 @@ export function createCodeplugIo(ctx: UiContext) {
     const imageSession = ctx.session.current();
     // Rows first, then the schema built from them: the session holds this
     // image, so the metadata call below reports the detected driver as the
-    // image configures it, and the row check it runs (dropUnsupportedPowerValues
-    // in web/js/ui/channel-table.ts) has to measure this file's channels rather
+    // image configures it, and the row check it runs (adoptPowerLevels in
+    // web/js/ui/channel-table.ts) has to measure this file's channels rather
     // than whatever the grid still held from before the import.
     //
     // Undone if that call fails, because everything that agrees with these rows

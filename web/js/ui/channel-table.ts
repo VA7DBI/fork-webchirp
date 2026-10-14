@@ -464,8 +464,8 @@ export function createChannelTable(ctx: UiContext) {
   }
 
   // Record that rows were changed outside the check path: a move or a slot
-  // assignment gave them another Location, a radio change cleared a Power, an
-  // extras editor rewrote their sidecar. The driver's findings depend on all
+  // assignment gave them another Location, an extras editor rewrote their
+  // sidecar. The driver's findings depend on all
   // of that, so an answer in flight for one of these rows describes a row
   // that no longer exists and its version moves on. A row with edits still
   // pending, or with a check in flight, is checked again as it now stands --
@@ -809,8 +809,9 @@ export function createChannelTable(ctx: UiContext) {
   }
 
 
-  // Clear any Power the newly selected driver does not advertise, and report
-  // how many rows that touched.
+  // Move each Power the newly selected driver does not advertise onto its
+  // closest level, and report how many rows that touched once the runtime has
+  // answered for them.
   //
   // Power is the one column whose vocabulary is private to a driver: "High",
   // "Hi", "L3" and "0.1W" all name the same kind of thing in different words,
@@ -819,11 +820,18 @@ export function createChannelTable(ctx: UiContext) {
   // before a radio was selected, or under a different driver -- is not a value
   // the new driver disagrees with, it is a word it does not speak, and the
   // upload preflight rejects the whole row for it ("Power '0.1W' is not
-  // supported by this radio"). Clearing it means "no level chosen", which is
-  // what a new CHIRP memory holds and what the runtime already writes as the
-  // driver's own default (_resolve_power_level in
-  // web/python/webchirp_bridge/power_levels.py).
-  function dropUnsupportedPowerValues() {
+  // supported by this radio"). What it meant is a wattage: the schema the row
+  // was built under says what its label stood for (optionWatts), and a watt
+  // figure says so itself. The runtime turns that into the new radio's closest
+  // level, as CHIRP's import between radios does, or clears it -- "no level
+  // chosen", the driver's own default -- when nothing gives a wattage
+  // (_closest_power_outcome in web/python/webchirp_bridge/row_validation.py).
+  // A label the new driver does offer is kept as it is.
+  /**
+   * @param previous The schema the rows were built under, which the new one
+   *   is replacing.
+   */
+  async function adoptPowerLevels(previous: RadioMetadata | null | undefined): Promise<number> {
     if (!state.currentHeaders.includes("Power")) {
       return 0;
     }
@@ -834,16 +842,25 @@ export function createChannelTable(ctx: UiContext) {
       return 0;
     }
     const spoken = new Set(options.map(String));
-    const cleared: ChannelRow[] = [];
+    const watts = previous?.columns?.Power?.optionWatts ?? {};
+    const requests: Array<{ row: ChannelRow; edits: RowEdit[] }> = [];
     for (const row of state.currentRows) {
       const value = String(row.Power ?? "");
       if (value !== "" && !spoken.has(value)) {
-        row.Power = "";
-        cleared.push(row);
+        requests.push({ row, edits: [{ column: "Power", value: watts[value] ?? value, closestPower: true }] });
       }
     }
-    rowsRewritten(cleared);
-    return cleared.length;
+    if (requests.length === 0) {
+      return 0;
+    }
+    // Said out loud, because it edits rows the user can see; each channel's
+    // own line follows as its answer lands.
+    log.logDebug(
+      `RADIO POWER ${requests.length} channel(s) carry a level this radio does not publish: `
+      + "moving each to its closest level.",
+    );
+    await submitRowEdits(requests);
+    return requests.length;
   }
 
   // A row counts as a real channel when it has a usable frequency or a name;
@@ -1921,7 +1938,7 @@ export function createChannelTable(ctx: UiContext) {
     reconcileLocations,
     sortRowsByLocation,
     insertRowsAtSelectionOrEnd,
-    dropUnsupportedPowerValues,
+    adoptPowerLevels,
     createBlankChannelRow,
     findEnumOption,
     buildRows,

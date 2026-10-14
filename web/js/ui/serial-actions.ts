@@ -620,8 +620,8 @@ export function createSerialActions(ctx: UiContext) {
       // loaded and only the PMR levels blank -- would otherwise leave the grid
       // on the boot-time blank schema, which lists neither the levels these
       // rows carry nor the ones the upload preflight would accept, and which
-      // blanks them outright the next time the radio is re-selected
-      // (dropUnsupportedPowerValues in web/js/ui/channel-table.ts).
+      // rewrites them the next time the radio is re-selected
+      // (adoptPowerLevels in web/js/ui/channel-table.ts).
       await refreshMetadataForDownloadedRadio(session);
       state.currentHeaders = state.radioMetadata.headers?.length
         ? state.radioMetadata.headers

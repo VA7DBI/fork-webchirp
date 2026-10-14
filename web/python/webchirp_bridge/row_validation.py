@@ -25,12 +25,16 @@ from webchirp_bridge.channel_rows import (
 )
 from webchirp_bridge.column_metadata import _cached_column_metadata
 from webchirp_bridge.jsbridge import _log_debug
-from webchirp_bridge.power_levels import _level_map_for_radio
-from webchirp_bridge.row_normalization import normalize_cell
+from webchirp_bridge.power_levels import (
+    _closest_power_label,
+    _level_map_for_radio,
+    _valid_power_levels_for_driver,
+)
+from webchirp_bridge.row_normalization import CellOutcome, normalize_cell
 from webchirp_bridge.session import resolve_optional_session
 
 if TYPE_CHECKING:
-    from typing import Any, Literal, Optional
+    from typing import Any, Literal, Optional, Sequence
     from webchirp_bridge.channel_rows import Row, Rows
     from webchirp_bridge.session import RadioSession
 
@@ -513,16 +517,37 @@ def validate_rows_for_upload(rows: Rows, session_id: str = "") -> dict[str, Any]
     return {"valid": len(issues) == 0, "issues": issues, "warnings": warnings}
 
 
+def _closest_power_outcome(value: Any, levels: Sequence[chirp_common.PowerLevel]) -> CellOutcome:
+    """What a Power carried over from another radio's schema stores on this one.
+
+    The grid sends one when the selected radio changes under channels whose
+    level the new radio does not offer (adoptPowerLevels in
+    web/js/ui/channel-table.ts), spelled as the watts that level stood for.
+    It becomes the radio's closest level, as on a CSV import
+    (``_closest_power_label``). Text that names no wattage, or a radio with no
+    levels, clears the cell: "no level chosen" is what the runtime writes as
+    the driver's default, where a level the radio lacks fails the upload.
+    """
+    text = str(value or "").strip()
+    label = _closest_power_label(text, levels)
+    if label is not None:
+        return CellOutcome(label, True, f"{label} is this radio's closest level to {text}")
+    return CellOutcome("", False, f"{text} is not a level this radio has, and gives no wattage to match; cleared")
+
+
 def normalize_and_validate_rows(
     session_id: str, rows: list[RowEditRequest]
 ) -> dict[str, Any]:
     """RPC: apply the grid's edits to rows by the radio's rules, then check each row.
 
     Each request is ``{"row": <the row as stored>, "edits": [{"column",
-    "value", "allowReadOnly"}, ...]}``. The edits are applied in order, each
-    through ``normalize_cell`` (web/python/webchirp_bridge/row_normalization.py)
+    "value", "allowReadOnly", "closestPower"}, ...]}``. The edits are applied
+    in order, each through ``normalize_cell`` (web/python/webchirp_bridge/row_normalization.py)
     against the column metadata the grid shows for this session, with the
-    cell's current value as the fallback a rejected write keeps. The row that
+    cell's current value as the fallback a rejected write keeps -- except a
+    Power edit marked ``closestPower``, a level carried over from another
+    radio, which takes this radio's closest level instead
+    (``_closest_power_outcome``). The row that
     results is then checked by ``_row_findings``, the per-row half of the
     upload preflight, so a driver's objection reaches the cell when it is
     committed rather than when the radio is written.
@@ -537,19 +562,27 @@ def normalize_and_validate_rows(
     session = resolve_optional_session(session_id)
     columns = _cached_column_metadata(session)["columns"]
     radio, level_map, bounds = _edit_check_context(session)
+    # Built on the first edit that asks for it: reading a driver's features
+    # can build a radio instance, and almost no check needs them.
+    power_levels: Optional[list[chirp_common.PowerLevel]] = None
     results: list[dict[str, Any]] = []
     for request in rows or []:
         row: Row = dict((request or {}).get("row") or {})
         cells: list[dict[str, Any]] = []
         for edit in (request or {}).get("edits") or []:
             column = str((edit or {}).get("column") or "")
-            outcome = normalize_cell(
-                column,
-                (edit or {}).get("value"),
-                columns.get(column),
-                row.get(column),
-                bool((edit or {}).get("allowReadOnly")),
-            )
+            if column == "Power" and (edit or {}).get("closestPower"):
+                if power_levels is None:
+                    power_levels = _valid_power_levels_for_driver(session)
+                outcome = _closest_power_outcome((edit or {}).get("value"), power_levels)
+            else:
+                outcome = normalize_cell(
+                    column,
+                    (edit or {}).get("value"),
+                    columns.get(column),
+                    row.get(column),
+                    bool((edit or {}).get("allowReadOnly")),
+                )
             row[column] = outcome.value
             cells.append({"column": column, **outcome.as_json()})
         errors, warnings = _row_findings(radio, level_map, bounds, row)

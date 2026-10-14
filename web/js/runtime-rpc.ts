@@ -159,6 +159,12 @@ export interface RowEdit {
   column: string;
   value: string;
   allowReadOnly?: boolean;
+  /**
+   * A Power carried over from another radio's schema, as the watts it stood
+   * for: stored as this radio's closest level instead of being refused
+   * (adoptPowerLevels in web/js/ui/channel-table.ts).
+   */
+  closestPower?: boolean;
 }
 
 /** One row to check: the row as stored, and the edits to apply to it in order. */

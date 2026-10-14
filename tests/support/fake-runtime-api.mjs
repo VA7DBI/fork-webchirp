@@ -86,10 +86,11 @@ export function withRadioSessions(api) {
 // what the grid does with an answer rather than about the rules themselves,
 // which tests/channels/row-normalization.mjs pins against the real runtime.
 //
-//   verdict(column, value, previous, { allowReadOnly, payload }) -> { value, accepted, note? }
+//   verdict(column, value, previous, { allowReadOnly, closestPower, payload }) -> { value, accepted, note? }
 //                 What one edit stores. Applied in order per row, each seeing
 //                 what the edit before it stored, as the runtime does. The
-//                 default stores every value as typed.
+//                 default stores every value as typed, a closestPower edit
+//                 included (a Power carried over from another radio).
 //   findings(row) -> { issues, warnings }
 //                 What the driver says about the row the edits produced.
 //   held          Answer nothing until the test calls release(), so a test
@@ -110,8 +111,12 @@ export function fakeRowCheck({
     return {
       rows: rows.map(({ row, edits }) => {
         const current = { ...row };
-        const cells = edits.map(({ column, value, allowReadOnly }) => {
-          const outcome = verdict(column, String(value ?? ""), current[column], { allowReadOnly: Boolean(allowReadOnly), payload });
+        const cells = edits.map(({ column, value, allowReadOnly, closestPower }) => {
+          const outcome = verdict(column, String(value ?? ""), current[column], {
+            allowReadOnly: Boolean(allowReadOnly),
+            closestPower: Boolean(closestPower),
+            payload,
+          });
           current[column] = outcome.value;
           return { column, value: outcome.value, accepted: outcome.accepted, note: outcome.note ?? "" };
         });

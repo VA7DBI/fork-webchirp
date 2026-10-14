@@ -494,6 +494,7 @@ export function createRadioCatalog(ctx: UiContext) {
   }
 
   function applyRadioMetadata(metadata: RadioMetadata): void {
+    const previous = state.radioMetadata;
     state.radioMetadata = metadata;
     state.currentHeaders = state.radioMetadata.headers?.length
       ? state.radioMetadata.headers
@@ -501,15 +502,10 @@ export function createRadioCatalog(ctx: UiContext) {
     // Channels can predate the radio: repeaters imported before one was
     // picked, or a codeplug edited under a different driver. Their Power
     // labels belong to whatever schema built them, and this driver's preflight
-    // rejects a label it does not publish, so drop those rather than let the
-    // user meet the error one upload later. Said out loud, because it edits
-    // rows the user can see.
-    const cleared = ctx.table.dropUnsupportedPowerValues();
-    if (cleared > 0) {
-      log.logDebug(
-        `RADIO POWER cleared on ${cleared} channel(s): the level they carried is not one this radio publishes.`,
-      );
-    }
+    // rejects a label it does not publish, so move those onto this radio's
+    // closest level rather than let the user meet the error one upload later.
+    // The previous schema is what says how many watts each label stood for.
+    void ctx.table.adoptPowerLevels(previous);
   }
 
   // Load the selected radio's CHIRP-derived column metadata from the Python

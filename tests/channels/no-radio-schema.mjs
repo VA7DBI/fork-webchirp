@@ -29,7 +29,7 @@ import {
   flushMicrotasks,
   selectRadioBySearch,
 } from "../support/ui-interactions.mjs";
-import { withRadioSessions } from "../support/fake-runtime-api.mjs";
+import { fakeRowCheck, withRadioSessions } from "../support/fake-runtime-api.mjs";
 
 // The runtime the grid checks its writes with: the real one, through the
 // harness, with no radio selected -- so the default schema's rules apply, as
@@ -45,7 +45,10 @@ async function harnessRuntimeApi() {
 // The grid with the driver metadata a caller passes in. `columns` undefined is
 // the state before the startup schema has been fetched. Its row builders ask
 // runtimeApi for every verdict (buildRows in web/js/ui/channel-table.ts).
-async function tableWithMetadata(columns, rows = [], runtimeApi = null) {
+// sessionId names the radio the runtime is asked about, as the selected
+// radio's session does; empty is no radio. debug collects the lines the grid
+// writes to Debug Output.
+async function tableWithMetadata(columns, rows = [], runtimeApi = null, { sessionId = "", debug = [] } = {}) {
   installIndexPage();
   const { createChannelTable } = await import("../../web/js/ui/channel-table.ts");
   const dom = {
@@ -58,16 +61,17 @@ async function tableWithMetadata(columns, rows = [], runtimeApi = null) {
     currentHeaders: CSV_FORMAT_HEADERS.slice(),
     currentRows: rows,
     radioMetadata: columns ? { headers: CSV_FORMAT_HEADERS.slice(), columns } : {},
-    radioSession: null,
+    radioSession: sessionId ? { id: sessionId } : null,
     runtimeApi: runtimeApi ?? await harnessRuntimeApi(),
   };
   return createChannelTable({
     dom,
     state,
-    log: { setStatus() {}, logDebug() {} },
+    log: { setStatus() {}, logDebug(line) { debug.push(line); } },
     // render() reports the selection outward; the bulk editor is what listens.
     actions: { channelSelectionChanged() {} },
-    // No radio selected: the runtime is asked with an empty session id.
+    // With no sessionId, no radio is selected: the runtime is asked with an
+    // empty session id.
     session: { idOf: async (handle) => handle?.id ?? "", isCurrent: (handle) => state.radioSession === handle },
   });
 }
@@ -237,10 +241,13 @@ test("a repeater imported before a radio was picked passes that radio's prefligh
   assert.equal(rejected.valid, false, "the level is a word this radio does not speak");
   assert.match(rejected.issues[0].message, /Power '50W' is not supported/);
 
-  // Selecting the radio is what resolves it: the label goes, the channel stays.
-  const withRows = await tableWithMetadata(uv5r.columns, rows);
-  assert.equal(withRows.dropUnsupportedPowerValues(), 1);
-  assert.equal(rows[0].Power, "");
+  // Selecting the radio is what resolves it: the level becomes the radio's
+  // closest one (High, 4W, for 50W), and the channel stays.
+  const withRows = await tableWithMetadata(uv5r.columns, rows, null, {
+    sessionId: await harness.session("uv5r", "BaofengUV5RGeneric"),
+  });
+  assert.equal(await withRows.adoptPowerLevels(schema), 1);
+  assert.equal(rows[0].Power, "High");
   assert.equal(rows[0].Frequency, "145.687500", "nothing else is touched");
 
   const accepted = await harness.runPythonJson(
@@ -258,21 +265,57 @@ test("a power level the radio does publish survives the schema swap", async () =
     rows,
   );
 
-  assert.equal(table.dropUnsupportedPowerValues(), 0);
+  assert.equal(await table.adoptPowerLevels(null), 0);
   assert.equal(rows[0].Power, "High");
 });
 
 test("a driver that publishes no power levels measures nothing", async () => {
   // 99 driver classes advertise none. An empty list is not evidence that a
-  // row's level is wrong, so nothing is cleared.
+  // row's level is wrong, so nothing is moved.
   const rows = [{ Power: "5.0W" }];
   const table = await tableWithMetadata(
     { Power: { kind: "enum", editable: true, options: [] } },
     rows,
   );
 
-  assert.equal(table.dropUnsupportedPowerValues(), 0);
+  assert.equal(await table.adoptPowerLevels(null), 0);
   assert.equal(rows[0].Power, "5.0W");
+});
+
+test("a level another driver named moves to the closest one by the watts that driver gave it", async () => {
+  // A codeplug edited under one radio, then another selected: "Mid" means
+  // nothing to a KG-1000G Plus (L 1W, M 20W, H 50W), but the schema it was
+  // built under says it stood for 20W, which is that radio's M. A label
+  // nothing gives a wattage for has no closest level and is cleared, rather
+  // than failing the upload; one the radio has is not touched.
+  const harness = await sharedHarness();
+  await ensureModule(harness, "kguv980p");
+  const sessionId = await harness.session("kguv980p", "KG1000GPlusRadio");
+  const kg = await harness.runPythonJson("json.dumps(get_radio_column_metadata(_sid))", { _sid: sessionId });
+  const rows = [
+    { Location: "1", Frequency: "145.500000", Power: "Mid" },
+    { Location: "2", Frequency: "145.525000", Power: "5.0W" },
+    { Location: "3", Frequency: "145.550000", Power: "Turbo" },
+    { Location: "4", Frequency: "145.575000", Power: "H" },
+  ];
+  const previous = {
+    columns: {
+      Power: {
+        kind: "enum",
+        options: ["Low", "Mid", "High"],
+        optionWatts: { Low: "1.0W", Mid: "20W", High: "50W" },
+      },
+    },
+  };
+  const debug = [];
+  const table = await tableWithMetadata(kg.columns, rows, null, { sessionId, debug });
+
+  assert.equal(await table.adoptPowerLevels(previous), 3);
+  assert.deepEqual(rows.map((row) => row.Power), ["M", "L", "", "H"]);
+  // Said out loud: the batch, then each channel with what it was measured by.
+  assert.ok(debug.some((line) => /^RADIO POWER 3 channel\(s\)/.test(line)), debug.join("\n"));
+  assert.ok(debug.some((line) => /channel=1 column=Power: M is this radio's closest level to 20W$/.test(line)));
+  assert.ok(debug.some((line) => /channel=3 column=Power: Turbo is not a level this radio has/.test(line)));
 });
 
 test("the startup schema imports every repeater a directory offers", async () => {
@@ -322,11 +365,12 @@ test("loadEmptySchema installs the whole schema, not just its headers", async ()
   assert.equal(modeCell.value, "FM");
 });
 
-test("selecting a radio is what clears a power level it cannot hold", async () => {
-  // The seam the unit tests above cannot see: dropUnsupportedPowerValues is
-  // correct on its own, but nothing proved applyRadioMetadata calls it, so
-  // deleting that call would leave the fix out of the running app with every
-  // test still green.
+test("selecting a radio is what moves a power level it cannot hold to its closest one", async () => {
+  // The seam the unit tests above cannot see: adoptPowerLevels is correct on
+  // its own, but nothing proved applyRadioMetadata calls it, so deleting that
+  // call would leave the fix out of the running app with every test still
+  // green. The runtime's rule is stubbed here (the tests above run the real
+  // one); what matters is that the radio change asks it, for the 50W row.
   const { document } = installIndexPage();
   const { createUiController } = await import("../../web/js/ui.ts");
   const ui = createUiController();
@@ -359,6 +403,12 @@ test("selecting a radio is what clears a power level it cannot hold", async () =
     getRadioSettings: async () => ({
       supported: false, available: false, requiresImage: false, message: "", groups: [],
     }),
+    // One's closest level to 50W, as the runtime would answer for it.
+    normalizeAndValidateRows: fakeRowCheck({
+      verdict: (_column, value, _previous, { closestPower }) => (closestPower
+        ? { value: "High", accepted: true, note: `High is this radio's closest level to ${value}` }
+        : { value, accepted: true }),
+    }).normalizeAndValidateRows,
   }));
   await ui.init(true);
 
@@ -370,19 +420,17 @@ test("selecting a radio is what clears a power level it cannot hold", async () =
 
   // A row that kept its stale label renders it: bindCellEditor appends an
   // option for a value outside the driver's list and selects it, so "50W"
-  // surviving here is exactly what an unwired clear would look like.
+  // surviving here is exactly what an unwired radio change would look like.
   const powerCell = channelRows(document)[0].children[3].children[0];
-  assert.notEqual(powerCell.value, "50W", "the label this radio cannot hold is gone");
+  assert.equal(powerCell.value, "High", "the level this radio cannot hold became its closest");
   assert.deepEqual(
     Array.from(powerCell.children).map((option) => option.value),
     ["High", "Low"],
     "and it left no option behind for itself",
   );
-  assert.match(
-    document.querySelector("#debug-output").value,
-    /RADIO POWER cleared on 1 channel\(s\)/,
-    "an edit the user can see has to be said out loud",
-  );
+  const debug = document.querySelector("#debug-output").value;
+  assert.match(debug, /RADIO POWER 1 channel\(s\) carry a level/, "an edit the user can see has to be said out loud");
+  assert.match(debug, /column=Power: High is this radio's closest level to 50W/);
 });
 
 // Everything below is the state before the startup schema resolves, and after
