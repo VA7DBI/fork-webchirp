@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { initAnalytics } from "../../web/js/analytics.ts";
+import { ANDROID_APP_LAUNCH_PARAMS } from "../../web/js/android-app.ts";
 import { bindInstallPrompt } from "../../web/js/install-prompt.ts";
 import { createInstallButton } from "../../web/js/ui/install-button.ts";
 import { installIndexPage } from "../support/index-page.mjs";
@@ -68,6 +69,18 @@ test("the button appears once the browser parks an install", () => {
 
   win.dispatch("beforeinstallprompt", fakePromptEvent());
   assert.equal(installAppEl.hidden, false);
+});
+
+// The Android app is the installed copy, so an Install button inside it would
+// offer to install the site a second time.
+test("the button stays hidden inside the Android app", () => {
+  const win = makeWindow({ search: `?${new URLSearchParams(ANDROID_APP_LAUNCH_PARAMS)}` });
+  bindInstallPrompt(win);
+  const { installAppEl, ctx } = makeContext();
+  createInstallButton(ctx).bindEvents();
+
+  win.dispatch("beforeinstallprompt", fakePromptEvent());
+  assert.equal(installAppEl.hidden, true);
 });
 
 test("an install offered before the UI booted is still shown", () => {

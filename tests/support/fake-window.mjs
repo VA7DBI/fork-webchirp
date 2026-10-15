@@ -18,10 +18,14 @@
 //   fetch        - an explicit fetch, when a test needs more than version.json.
 //   broadcast    - false to leave BroadcastChannel off the window, as a browser
 //                  without it (or with site data blocked) presents it.
+//   search       - what location.search reports, the query the page was
+//                  opened with.
+//   storage      - false to leave localStorage and sessionStorage off the
+//                  window.
 // Also exposes `injected` (every node appended to document.head), `broadcasts`
 // (every message posted to a channel) and the `dispatch`/`listenerCount`/
 // `deliverBroadcast` helpers tests drive listeners through.
-// localStorage's three methods over a Map, for one fake tab.
+// Web Storage's three methods over a Map, for one fake tab.
 function memoryStorage() {
   const items = new Map();
   return {
@@ -43,6 +47,7 @@ export function makeWindow({
   version = { webchirpSha: "abc123" },
   fetch = async () => ({ ok: version !== null, json: async () => version }),
   broadcast = true,
+  search = "",
   storage = true,
 } = {}) {
   const listeners = new Map();
@@ -78,9 +83,11 @@ export function makeWindow({
         }
       }
     },
-    location: { hostname },
-    // An in-memory localStorage; storage: false leaves the window without one.
+    location: { hostname, search },
+    // In-memory localStorage and sessionStorage; storage: false leaves the
+    // window without either.
     localStorage: storage ? memoryStorage() : undefined,
+    sessionStorage: storage ? memoryStorage() : undefined,
     injected,
     document: {
       createElement: () => ({}),
