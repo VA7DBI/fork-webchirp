@@ -275,26 +275,28 @@ export function createCodeplugIo(ctx: UiContext) {
   // preflight first: a value the driver rejects (Mode AM on a radio with only
   // FM and NFM) blocks it as a highlighted cell, rather than reaching the
   // runtime and coming back as an error with a traceback, which reads as a
-  // defect and is reported to Sentry as one.
+  // defect and is reported to Sentry as one. The image is built for the
+  // session the rows were checked against; a radio picked while the check
+  // ran cancels the export rather than writing rows checked for another radio.
   async function exportBinaryCodeplug() {
     if (!state.selectedRadio) {
       log.setStatus("Search for and select a radio first.");
       return;
     }
+    const session = ctx.session.current();
     log.setStatus("Running export preflight validation...");
-    const preflight = await ctx.serial.runUploadPreflight();
+    const preflight = await ctx.serial.runUploadPreflight(session);
+    if (preflight.stale) {
+      log.setStatus("Export cancelled: the selected radio changed.");
+      return;
+    }
     if (!preflight.valid) {
-      const count = preflight.issues.length;
-      log.setStatus(
-        count > 0
-          ? `Export blocked: ${count} invalid value(s) highlighted in red in ${ctx.actions.currentViewLabel()}.`
-          : "Export blocked: preflight validation failed.",
-      );
+      log.setStatus(`Export blocked: ${preflight.summary || "preflight validation failed"}.`);
       return;
     }
     log.setStatus("Preparing CHIRP binary codeplug...");
     const result = await requireRuntimeApi(state).exportImage({
-      sessionId: await ctx.session.currentId(),
+      sessionId: await ctx.session.idOf(session),
       rows: state.currentRows,
       settings: ctx.settings.getGroups(),
     });

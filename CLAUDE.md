@@ -253,8 +253,10 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   - Download should record the image on the selected radio's session.
   - Upload should use the session's image and fail clearly if the session holds
     none that came from the radio or a file (a synthetic export never counts).
-  - Upload and binary export both run `runUploadPreflight()` first: a value the
-    driver refuses blocks them as a highlighted cell, never as a runtime error.
+  - Upload and binary export both run `runUploadPreflight(session)` first, for
+    the session they then write to, and stop when its answer is `stale`: a
+    value the driver refuses blocks them as a highlighted cell, never as a
+    runtime error.
   - Prepare serial session before clone operations (buffer clear, control lines, settle delay).
   - When `SerialBridge` gives up a port for any reason other than `close()`,
     call `_losePort()`, never `_teardown()` alone. It reports `onPortLost`

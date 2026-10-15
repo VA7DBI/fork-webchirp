@@ -13,6 +13,7 @@ import test from "node:test";
 import { installIndexPage } from "../support/index-page.mjs";
 import {
   channelRows,
+  createDeferred,
   dispatch,
   flushMicrotasks,
   importSampleCsv,
@@ -33,24 +34,41 @@ const RADIO = {
   key: "kg935g:KGXS20GPlusRadio",
   isLiveRadio: false,
 };
+// The radio the AM channel came from, to switch to while a check runs.
+const SOURCE_RADIO = {
+  vendor: "Wouxun",
+  model: "KG-1000G Plus",
+  module: "kguv980p",
+  className: "KG1000GPlusRadio",
+  key: "kguv980p:KG1000GPlusRadio",
+  isLiveRadio: false,
+};
 const AM_REFUSED = { rowIndex: 1, column: "Mode", message: "Mode AM not supported" };
+const SQUELCH_REFUSED = { path: ["basic", "squelch"], valueIndex: 0, message: "Squelch 12 is out of range" };
 
-// Boots the real page against a runtime whose row preflight reports
-// rowIssues, recording every export it is asked for.
-async function bootUi(t, rowIssues) {
+// Boots the real page against a runtime whose preflight reports rowIssues and
+// settingIssues, recording every export it is asked for. validateRows, when
+// given, answers the row check instead, so a test can hold it in flight.
+async function bootUi(t, { rowIssues = [], settingIssues = [], validateRows = null } = {}) {
   const { window } = installIndexPage();
   const { createUiController } = await import("../../web/js/ui.ts");
   const exports = [];
   const ui = createUiController();
   ui.setRuntimeApi(withRadioSessions({
-    listRadios: async () => ({ radios: [RADIO] }),
+    listRadios: async () => ({ radios: [RADIO, SOURCE_RADIO] }),
     getRuntimeInfo: async () => ({ chirpRevision: "test-revision" }),
     getDefaultSchema: async () => ({ headers: HEADERS }),
     getRadioMetadata: async () => ({ headers: HEADERS, columns: {} }),
     getRadioSettings: async () => ({ supported: false, available: false, requiresImage: false, message: "", groups: [] }),
     parseCsv: async () => ({ headers: HEADERS, rows: ROWS.map((row) => ({ ...row })), errors: [] }),
-    validateRowsForUpload: async () => ({ valid: rowIssues.length === 0, issues: rowIssues, warnings: [] }),
-    validateRadioSettings: async () => ({ valid: true, issues: [], settings: [], available: false }),
+    validateRowsForUpload: validateRows
+      || (async () => ({ valid: rowIssues.length === 0, issues: rowIssues, warnings: [] })),
+    validateRadioSettings: async () => ({
+      valid: settingIssues.length === 0,
+      issues: settingIssues,
+      settings: [],
+      available: true,
+    }),
     exportImage: async (payload) => {
       exports.push(payload);
       return { imageBase64: "AQID", settings: [], vendor: RADIO.vendor, model: RADIO.model };
@@ -84,7 +102,7 @@ function cell(document, rowIdx, column) {
 }
 
 test("a value the radio refuses blocks the binary export as a highlighted cell", async (t) => {
-  const { document, exports } = await bootUi(t, [AM_REFUSED]);
+  const { document, exports } = await bootUi(t, { rowIssues: [AM_REFUSED] });
 
   await dispatch(document.querySelector("#export-binary"), "click");
 
@@ -98,11 +116,63 @@ test("a value the radio refuses blocks the binary export as a highlighted cell",
 });
 
 test("rows the radio accepts are exported after the preflight", async (t) => {
-  const { document, exports } = await bootUi(t, []);
+  const { document, exports } = await bootUi(t);
 
   await dispatch(document.querySelector("#export-binary"), "click");
 
   assert.equal(exports.length, 1);
   assert.deepEqual(exports[0].rows.map((row) => row.Mode), ["FM", "AM"]);
   assert.match(document.querySelector("#debug-output").value, /STATUS Exported Wouxun_KG-XS20G_Plus_\d{8}\.img/);
+});
+
+test("a refused radio setting is named as one, whichever view is open", async (t) => {
+  const { document, exports } = await bootUi(t, { settingIssues: [SQUELCH_REFUSED] });
+
+  await dispatch(document.querySelector("#export-binary"), "click");
+
+  assert.equal(exports.length, 0);
+  const debug = document.querySelector("#debug-output").value;
+  assert.match(debug, /STATUS Export blocked: 1 invalid value\(s\) highlighted in red in radio settings\./);
+  assert.match(debug, /PREFLIGHT INVALID setting=basic\.squelch value=0: Squelch 12 is out of range/);
+});
+
+test("refused channels and settings are both counted where they are", async (t) => {
+  const { document, exports } = await bootUi(t, { rowIssues: [AM_REFUSED], settingIssues: [SQUELCH_REFUSED] });
+
+  await dispatch(document.querySelector("#export-binary"), "click");
+
+  assert.equal(exports.length, 0);
+  assert.match(
+    document.querySelector("#debug-output").value,
+    /STATUS Export blocked: 1 invalid value\(s\) highlighted in red in channels and 1 in radio settings\./,
+  );
+});
+
+test("a radio picked while the export's preflight runs cancels the export", async (t) => {
+  // The check is held in flight; the user picks the radio the channels came
+  // from meanwhile. The held answer is about the KG-XS20G Plus's session,
+  // which that pick closed, so it is neither shown nor exported against.
+  const answer = createDeferred();
+  const checked = [];
+  const { document, exports } = await bootUi(t, {
+    validateRows: (payload) => {
+      checked.push(payload.className);
+      return answer.promise;
+    },
+  });
+
+  const click = dispatch(document.querySelector("#export-binary"), "click");
+  await flushMicrotasks();
+  assert.deepEqual(checked, ["KGXS20GPlusRadio"], "the check is in flight for the first radio");
+  selectRadioBySearch(document, "Wouxun KG-1000G Plus");
+  await flushMicrotasks();
+  answer.resolve({ valid: false, issues: [AM_REFUSED], warnings: [] });
+  await click;
+
+  assert.equal(exports.length, 0);
+  assert.equal(cell(document, 1, "Mode").classList.contains("is-invalid"), false, "the stale answer is not shown");
+  const debug = document.querySelector("#debug-output").value;
+  assert.match(debug, /STATUS Export cancelled: the selected radio changed\./);
+  assert.match(debug, /PREFLIGHT discarded: the selected radio changed while it ran\./);
+  assert.doesNotMatch(debug, /PREFLIGHT INVALID/);
 });

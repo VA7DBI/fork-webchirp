@@ -59,8 +59,35 @@ const CLONE_FLOW_OUTCOMES: Readonly<Record<string, { flow: string; outcome: stri
   radio_upload_failure: { flow: FLOWS.RADIO_UPLOAD, outcome: OUTCOMES.FAILED },
 });
 
+/** What the preflight before an upload or a binary export found. */
+export interface PreflightResult {
+  valid: boolean;
+  // The selected radio changed while the check ran: nothing was shown, and
+  // the write it guarded must not go ahead.
+  stale: boolean;
+  issues: Array<RowIssue | SettingIssue>;
+  // "2 invalid value(s) highlighted in red in channels", or "" with none.
+  summary: string;
+}
+
+// Say how many values the preflight highlighted and in which view, so a
+// blocked write sends the user to the view that holds them: a settings value
+// is never in the channel grid, whichever view is open.
+function preflightSummary(rowIssues: number, settingIssues: number): string {
+  if (rowIssues > 0 && settingIssues > 0) {
+    return `${rowIssues} invalid value(s) highlighted in red in channels and ${settingIssues} in radio settings`;
+  }
+  if (rowIssues > 0) {
+    return `${rowIssues} invalid value(s) highlighted in red in channels`;
+  }
+  if (settingIssues > 0) {
+    return `${settingIssues} invalid value(s) highlighted in red in radio settings`;
+  }
+  return "";
+}
+
 export function createSerialActions(ctx: UiContext) {
-  const { dom, state, log, actions } = ctx;
+  const { dom, state, log } = ctx;
 
   let transportController: { capability?: typeof capability; choosePort(transport: string): Promise<void> } | null = null;
   let capability = { supported: false, native: false, webusb: false, webbluetooth: false };
@@ -510,15 +537,23 @@ export function createSerialActions(ctx: UiContext) {
     };
   }
 
-  // Validate rows and radio-wide settings before a write, highlighting every
-  // rejected value so the user can see what blocked it. An upload runs it, and
-  // so does a binary export (codeplug-io), which writes the same rows into an
-  // image and would refuse the same values.
-  async function runUploadPreflight(): Promise<{ valid: boolean; issues: Array<RowIssue | SettingIssue> }> {
+  // Validate rows and radio-wide settings against session's radio before a
+  // write, highlighting every rejected value so the user can see what blocked
+  // it. An upload runs it, and so does a binary export (codeplug-io), which
+  // writes the same rows into an image and would refuse the same values. The
+  // caller passes the session it will write to: a radio picked while the check
+  // runs makes the answer stale, and a stale answer is neither shown nor
+  // acted on. summary says how many values are highlighted and where.
+  async function runUploadPreflight(session: RadioSessionHandle | null): Promise<PreflightResult> {
     if (!state.selectedRadio) {
-      return { valid: false, issues: [{ rowIndex: -1, column: "", message: "No radio selected." }] };
+      return {
+        valid: false,
+        stale: false,
+        issues: [{ rowIndex: -1, column: "", message: "No radio selected." }],
+        summary: "",
+      };
     }
-    const sessionId = await ctx.session.currentId();
+    const sessionId = await ctx.session.idOf(session);
     const [rowResult, settingsResult] = await Promise.all([
       requireRuntimeApi(state).validateRowsForUpload({
         rows: state.currentRows,
@@ -529,6 +564,10 @@ export function createSerialActions(ctx: UiContext) {
         sessionId,
       }),
     ]);
+    if (!ctx.session.isCurrent(session)) {
+      log.logDebug("PREFLIGHT discarded: the selected radio changed while it ran.");
+      return { valid: false, stale: true, issues: [], summary: "" };
+    }
     const result = rowResult;
     const settingsValidation = settingsResult
       || { valid: true, issues: [], settings: ctx.settings.getGroups() };
@@ -563,11 +602,14 @@ export function createSerialActions(ctx: UiContext) {
       ctx.table.render();
     }
     ctx.settings.render();
+    const settingIssues = settingsValidation.issues || [];
     return {
       valid: Boolean(result?.valid)
         && Boolean(settingsValidation?.valid)
         && ctx.settings.invalidCount() === 0,
-      issues: [...issues, ...(settingsValidation.issues || [])],
+      stale: false,
+      issues: [...issues, ...settingIssues],
+      summary: preflightSummary(issues.length, ctx.settings.invalidCount()),
     };
   }
 
@@ -683,7 +725,11 @@ export function createSerialActions(ctx: UiContext) {
     try {
       trackRadioEvent("radio_upload", radio);
       log.setStatus("Running upload preflight validation...");
-      const preflight = await runUploadPreflight();
+      const preflight = await runUploadPreflight(session);
+      if (preflight.stale) {
+        log.setStatus("Upload cancelled: the selected radio changed.");
+        return;
+      }
       if (!preflight.valid) {
         const count = Array.isArray(preflight.issues) ? preflight.issues.length : 0;
         const blockedColumn = firstIssueColumn(preflight.issues);
@@ -697,11 +743,7 @@ export function createSerialActions(ctx: UiContext) {
           ...codeplugParams(state),
           first_column: blockedColumn,
         });
-        log.setStatus(
-          count > 0
-            ? `Upload blocked: ${count} invalid value(s) highlighted in red in ${actions.currentViewLabel()}.`
-            : "Upload blocked: preflight validation failed.",
-        );
+        log.setStatus(`Upload blocked: ${preflight.summary || "preflight validation failed"}.`);
         return;
       }
       stage = "transfer";

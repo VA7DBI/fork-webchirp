@@ -74,7 +74,6 @@ export function createUiController() {
     // The grid owns the row selection; the controls that only apply to one
     // (the bulk editor) are told through here rather than polling it.
     channelSelectionChanged: () => ctx.bulkEdit.refreshAvailability(),
-    currentViewLabel: () => currentViewLabel(),
   };
 
   // Modules hang off one context object so siblings can reach each other
@@ -128,10 +127,6 @@ export function createUiController() {
 
   function setRuntimeApi(api: RuntimeApi) {
     state.runtimeApi = api;
-  }
-
-  function currentViewLabel() {
-    return state.currentEditorView === "settings" ? "radio settings" : "channels";
   }
 
   function setEditorView(nextView: string) {
