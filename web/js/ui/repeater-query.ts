@@ -77,7 +77,7 @@ export function createRepeaterQuery(ctx: UiContext) {
   const { dom, state, log } = ctx;
 
   // przemienniki.net and RepeaterBook depend on the configured proxy base; a
-  // blank base hides them. IRTS remains available through api.codeplug.org so
+  // blank base hides them. IRTS remains available through api.webchirp.org so
   // a service failure is visible when the user tries it, rather than silently
   // removing the action.
   const endpoints = buildRepeaterEndpoints(resolveRepeaterApiBase());

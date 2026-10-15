@@ -182,12 +182,17 @@ and drift on each bump.
 - **worktree-borrows-the-parent-node_modules** (2026-09-24): worktrees under `.claude/worktrees/` resolve `node_modules` by walking up to the parent checkout. A probe script must live inside the worktree (one in `/private/tmp` gets `ERR_MODULE_NOT_FOUND`), and a dependency bump in the parent changes what every worktree tests against.
 - **asdf-python-unset** (2026-07-23): `python3` depends on the machine having an asdf Python; the fallback is `/usr/bin/python3 -m compileall -q web/python`. Adding python to `.tool-versions` is not free, because the workflows feed that file to `actions/setup-node`.
 
+## api.webchirp.org (repeater API host)
+
+- **api-webchirp-is-the-same-server** (2026-10-15): `api.webchirp.org` and `api.codeplug.org` resolve to the same address (158.220.81.129) and answer every route the app calls (`/irts`, `/przemienniki`, `/repeaterbook`, `/cities`, `/lookup`) with the same CORS allowlist: `https://webchirp.org`, `https://codeplug.org` and `http://localhost:<port>` are echoed back; `https://jasiek.github.io`, `https://www.webchirp.org` and `http://webchirp.org` get HTTP 403. The app's default base moved to `api.webchirp.org` on this date; the older entries below were measured on `api.codeplug.org`.
+- **localhost-is-allowed-on-every-route** (2026-10-15): both hosts now echo `http://localhost:8000` on `/przemienniki/meta` and `/repeaterbook/meta` too, so **cities-cors** no longer marks a difference between routes.
+
 ## api.codeplug.org /cities (gazetteer)
 
 `GET /cities?q=<prefix>[&lat=&lon=]` returns `{ query, results: [{ id, name, region, country, cc, lat, lon, population?, kind, score }] }`.
 
 - **cities-no-filters** (2026-09-13): there is no country filter: `cc` and `country` are ignored. `limit` is capped at 20, which is also the default.
-- **cities-cors** (2026-09-13): `http://localhost:<port>` origins are allowed, unlike on `/przemienniki` and `/repeaterbook`.
+- **cities-cors** (2026-09-13): `http://localhost:<port>` origins are allowed, unlike on `/przemienniki` and `/repeaterbook`. Superseded by **localhost-is-allowed-on-every-route**.
 
 ## api.codeplug.org /lookup (per-callsign position)
 

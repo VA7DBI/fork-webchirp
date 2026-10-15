@@ -939,7 +939,7 @@ test("a blank API base hides proxy sources but leaves IRTS available", async () 
   // IRTS remains visible on the default hosted endpoint and reports a service
   // failure when used instead of disappearing with the proxy-backed sources.
   await dispatch(dom.channelImportIrtsEl, "click");
-  assert.deepEqual(calls.map((call) => call.url), ["https://api.codeplug.org/irts/meta"]);
+  assert.deepEqual(calls.map((call) => call.url), ["https://api.webchirp.org/irts/meta"]);
   assert.match(log.errors.join("\n"), /^IRTS modal: Unrouted fetch:/);
 
   // RSGB needs no CORS proxy, so it stays available on such deployments.

@@ -265,8 +265,8 @@ test("scrubText removes the user data a CHIRP traceback carries", () => {
   assert.equal(scrubText('Value "HOME REPEATER" is not valid'), 'Value "[value]" is not valid');
   // Search terms and coordinates ride in the query string of a failed lookup.
   assert.equal(
-    scrubText("GET https://api.codeplug.org/rsgb?lat=51.5&lon=-0.12 failed"),
-    "GET https://api.codeplug.org/rsgb?[query] failed",
+    scrubText("GET https://api.webchirp.org/rsgb?lat=51.5&lon=-0.12 failed"),
+    "GET https://api.webchirp.org/rsgb?[query] failed",
   );
 });
 
@@ -293,7 +293,7 @@ test("scrubEvent redacts messages, exception values and breadcrumbs", () => {
       values: [{ type: "RadioError", value: 'Value "HOME" rejected at 145.500000' }],
     },
     breadcrumbs: [
-      { category: "fetch", message: "fetch IO82MM", data: { url: "https://api.codeplug.org/q?lat=51.5" } },
+      { category: "fetch", message: "fetch IO82MM", data: { url: "https://api.webchirp.org/q?lat=51.5" } },
     ],
     request: { url: "https://codeplug.org/?locator=IO82MM" },
   });
@@ -307,7 +307,7 @@ test("scrubEvent redacts messages, exception values and breadcrumbs", () => {
   assert.equal(event.exception.values[0].type, "RadioError");
   assert.equal(event.exception.values[0].value, 'Value "[value]" rejected at [num]');
   assert.equal(event.breadcrumbs[0].message, "fetch [loc]");
-  assert.equal(event.breadcrumbs[0].data.url, "https://api.codeplug.org/q?[query]");
+  assert.equal(event.breadcrumbs[0].data.url, "https://api.webchirp.org/q?[query]");
   assert.equal(event.request.url, "https://codeplug.org/?[query]");
 });
 
