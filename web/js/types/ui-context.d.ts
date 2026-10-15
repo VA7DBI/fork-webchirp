@@ -37,8 +37,6 @@ export interface UiActions {
   openChannelExtra(rowIdx: number, trigger?: HTMLElement | null): unknown;
   // The grid's row selection moved.
   channelSelectionChanged(): void;
-  // "channels" or "radio settings", for status lines.
-  currentViewLabel(): string;
 }
 
 export interface UiContext {

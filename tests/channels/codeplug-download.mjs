@@ -35,6 +35,9 @@ function runtimeApi() {
       groups: [],
     }),
     normalizeRows: async () => "Location,Name\n0,Exported\n",
+    // The upload preflight a binary export runs first, passing every row.
+    validateRowsForUpload: async () => ({ valid: true, issues: [], warnings: [] }),
+    validateRadioSettings: async () => ({ valid: true, issues: [], settings: [], available: false }),
     exportImage: async () => ({ imageBase64: "AQID", settings: [] }),
   });
 }

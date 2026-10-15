@@ -83,6 +83,9 @@ function createRuntimeApi({ catalog = CATALOG, imageRadio = CATALOG[0] } = {}) {
         calls.normalizeRows.push(payload);
         return "Location,Name\n0,Exported\n";
       },
+      // The upload preflight a binary export runs first, passing every row.
+      validateRowsForUpload: async () => ({ valid: true, issues: [], warnings: [] }),
+      validateRadioSettings: async () => ({ valid: true, issues: [], settings: [], available: false }),
       exportImage: async (payload) => {
         calls.exportImage.push(payload);
         return { imageBase64: "AQID", settings: [] };
