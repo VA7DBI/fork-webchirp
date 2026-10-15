@@ -302,8 +302,8 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   exception is re-applied after every update: replace the template's
   `jcenter()` with `mavenCentral()` in `android/build.gradle`.
   `tests/build/android-app.mjs` holds the project to the site (host, package,
-  launch query, name, colours, icons, Custom Tabs fallback, Play's minimum
-  target SDK) and to its manifest; `.github/workflows/android.yml` builds it.
+  launch query, name, colours, icons, Custom Tabs fallback, a live service for
+  location delegation, Play's minimum target SDK) and to its manifest; `.github/workflows/android.yml` builds it.
   `android/README.md` is the release procedure. Signing keys never enter the
   repository.
 - We do not aim to support screen readers at this time.

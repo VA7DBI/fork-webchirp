@@ -75,6 +75,20 @@ test("a phone without Trusted Web Activities falls back to Custom Tabs", () => {
   assert.equal(twa.fallbackType, "customtabs");
 });
 
+// Chrome hands a TWA page's geolocation request to the app's DelegationService,
+// where Bubblewrap registers the location delegation handler, but Bubblewrap's
+// template enables and exports that service only when notifications are on.
+// Location delegation with notifications off leaves the repeater search's
+// "use my location" with no handler to answer it.
+test("location delegation has a delegation service to run in", () => {
+  if (twa.features?.locationDelegation?.enabled) {
+    assert.equal(twa.enableNotifications, true, "location delegation needs enableNotifications: true");
+  }
+  const manifest = readFileSync(path.join(androidDir, "app", "src", "main", "AndroidManifest.xml"), "utf8");
+  const service = manifest.match(/<service\s+android:name="\.DelegationService"[^>]*>/)?.[0] || "";
+  assert.match(service, /android:enabled="@bool\/enableNotification"/, "DelegationService is no longer gated as this test assumes");
+});
+
 // Bubblewrap regenerates the whole project from twa-manifest.json and writes
 // that file's SHA-1 beside it; a mismatch means the manifest was edited and
 // the project never regenerated, so the app builds from the old values.

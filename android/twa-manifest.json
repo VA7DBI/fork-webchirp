@@ -11,7 +11,7 @@
   "navigationDividerColor": "#000000",
   "navigationDividerColorDark": "#000000",
   "backgroundColor": "#F6F8FB",
-  "enableNotifications": false,
+  "enableNotifications": true,
   "startUrl": "/?utm_source=android_app&utm_medium=twa",
   "iconUrl": "https://webchirp.org/images/icon-512.png",
   "maskableIconUrl": "https://webchirp.org/images/icon-maskable-512.png",
