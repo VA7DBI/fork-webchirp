@@ -441,22 +441,43 @@ def _session_radio_context(
     return radio, _level_map_for_radio(radio, session), _memory_bounds_for_driver(session)
 
 
+def _readable_radio_context(
+    session: Optional[RadioSession],
+) -> tuple[Optional[chirp_common.Radio], dict[str, Any], Optional[tuple[int, int]]]:
+    """``_session_radio_context`` without a blank radio that cannot read a memory.
+
+    Without an image some drivers build an instance whose memory map is unset
+    (``baofeng_wp970i.BFA58S``, the ``kg935g`` family), and every get_memory
+    then raises an internal error that says nothing about the row. Probing one
+    memory tells a usable blank instance from one of those; for the latter the
+    rows get the column rules only, and the upload or export that follows,
+    which needs an image from such a driver, says so itself. A radio built
+    from an image is not probed: what it raises is the image's fault, and is
+    reported as it is.
+    """
+    radio, level_map, bounds = _session_radio_context(session)
+    if radio is None or session is None or session.has_backing_image:
+        return radio, level_map, bounds
+    try:
+        radio.get_memory(bounds[0] if bounds else 0)
+    except Exception as exc:
+        _log_debug(f"ROW CHECK column rules only for {session.session_id}: {exc}")
+        return None, _level_map_for_radio(None, session), bounds
+    return radio, level_map, bounds
+
+
 def _edit_check_context(
     session: Optional[RadioSession],
 ) -> tuple[Optional[chirp_common.Radio], dict[str, Any], Optional[tuple[int, int]]]:
-    """``_session_radio_context`` for the per-edit check, built once per image.
+    """``_readable_radio_context`` for the per-edit check, built once per image.
 
     Shared across calls because it is only read: ``_row_findings`` asks the
     radio for memories, validates copies of them and never writes one back.
     A live-mode radio is left out -- its memories are on the radio, so reading
     one would need the serial link the editor does not hold -- and so is a
     radio whose image will not build, which the upload preflight reports in
-    full, and a blank instance that cannot read its own first memory (some
-    drivers leave the memory map unset without an image, e.g.
-    ``baofeng_wp970i.BFA58S``), whose every finding would be that internal
-    error rather than anything about the row. Either way the edit still gets
-    the column rules, and the upload, which needs an image anyway, still runs
-    the driver.
+    full. Either way the edit still gets the column rules, and the upload,
+    which needs an image anyway, still runs the driver.
     """
     if session is None:
         return _session_radio_context(None)
@@ -465,14 +486,7 @@ def _edit_check_context(
         if issubclass(session.image_cls, chirp_common.LiveRadio):
             return None, _level_map_for_radio(None, session), _memory_bounds_for_driver(session)
         try:
-            radio, level_map, bounds = _session_radio_context(session)
-            if radio is not None and not session.has_backing_image:
-                # Without an image some drivers build an instance whose memory
-                # map is unset, and every get_memory then raises an internal
-                # error that says nothing about the row. Probing one memory
-                # tells a usable blank instance from one of those.
-                radio.get_memory(bounds[0] if bounds else 0)
-            return radio, level_map, bounds
+            return _readable_radio_context(session)
         except Exception as exc:
             _log_debug(f"ROW CHECK column rules only for {session.session_id}: {exc}")
             return None, _level_map_for_radio(None, session), _memory_bounds_for_driver(session)
@@ -487,10 +501,10 @@ def validate_rows_for_upload(rows: Rows, session_id: str = "") -> dict[str, Any]
     checked against CHIRP's generic limits only, since nothing more specific
     is known yet. Each row goes through ``_row_findings``, the same check a
     grid edit gets; only the duplicate-Location check, which needs every row,
-    is done here.
+    is done here. The UI runs it before an upload and before a binary export.
     """
     session = resolve_optional_session(session_id)
-    radio, level_map, bounds = _session_radio_context(session)
+    radio, level_map, bounds = _readable_radio_context(session)
     seen_slots: dict[int, int] = {}
     issues: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
