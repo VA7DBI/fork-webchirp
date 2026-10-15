@@ -12,7 +12,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { ANDROID_APP_LAUNCH_PARAMS, isAndroidAppLaunch } from "../../web/js/android-app.ts";
+import {
+  ANDROID_APP_LAUNCH_FLAG,
+  ANDROID_APP_LAUNCH_PARAMS,
+  isAndroidAppLaunch,
+} from "../../web/js/android-app.ts";
 import { repoRoot, webDir } from "../support/repo-paths.mjs";
 
 const androidDir = path.join(repoRoot, "android");
@@ -52,6 +56,20 @@ test("the app launches the site with the query that marks it as the app", () => 
   // Exactly those parameters: an extra one would split the app's sessions in
   // analytics from the ones the launch query attributes.
   assert.deepEqual(Object.fromEntries(url.searchParams), { ...ANDROID_APP_LAUNCH_PARAMS });
+});
+
+// A webchirp.org link the app opens keeps its own query, so the launch query
+// above never reaches it; Bubblewrap's firstRunFlag feature makes the
+// launcher add ANDROID_APP_LAUNCH_FLAG to every URL it opens instead. Without
+// it a page opened from a link would not know it runs in the app.
+test("every URL the app opens carries the launcher's flag", () => {
+  assert.deepEqual(twa.features?.firstRunFlag, { enabled: true, queryParameterName: ANDROID_APP_LAUNCH_FLAG });
+  const launcher = readFileSync(
+    path.join(androidDir, "app", "src", "main", "java", ...twa.packageId.split("."), "LauncherActivity.java"),
+    "utf8",
+  );
+  assert.ok(launcher.includes(`PARAM_FIRST_OPEN = "${ANDROID_APP_LAUNCH_FLAG}"`), "LauncherActivity adds another flag");
+  assert.match(launcher, /appendQueryParameter\(PARAM_FIRST_OPEN,/, "LauncherActivity does not add the flag");
 });
 
 test("the app's name, colours and icons are the site's", () => {

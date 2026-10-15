@@ -21,11 +21,31 @@ import android.os.Build;
 import android.os.Bundle;
 
 
+    import android.content.SharedPreferences;
+
+    import android.os.StrictMode;
+
 
 public class LauncherActivity
         extends com.google.androidbrowserhelper.trusted.LauncherActivity {
     
+        private static final String KEY_FIRST_OPEN = "bubblewrap.first_open";
+    
+        private static final String PARAM_FIRST_OPEN = "android_app_first_open";
+    
 
+    
+        private boolean checkAndMarkFirstOpen() {
+           StrictMode.ThreadPolicy originalPolicy = StrictMode.allowThreadDiskReads();
+           try {
+               SharedPreferences preferences = getPreferences(MODE_PRIVATE);
+               boolean isFirstRun = preferences.getBoolean(KEY_FIRST_OPEN, true);
+               preferences.edit().putBoolean(KEY_FIRST_OPEN, false).apply();
+               return isFirstRun;
+           } finally {
+               StrictMode.setThreadPolicy(originalPolicy);
+           }
+        }
     
 
     @Override
@@ -47,6 +67,11 @@ public class LauncherActivity
         // Get the original launch Url.
         Uri uri = super.getLaunchingUrl();
 
+        
+            uri = uri
+      .buildUpon()
+      .appendQueryParameter(PARAM_FIRST_OPEN, String.valueOf(checkAndMarkFirstOpen()))
+      .build();
         
 
         return uri;

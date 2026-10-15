@@ -29,6 +29,10 @@
   "features": {
     "locationDelegation": {
       "enabled": true
+    },
+    "firstRunFlag": {
+      "enabled": true,
+      "queryParameterName": "android_app_first_open"
     }
   },
   "alphaDependencies": {
