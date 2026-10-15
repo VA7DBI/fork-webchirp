@@ -38,7 +38,7 @@
   "isChromeOSOnly": false,
   "isMetaQuest": false,
   "fullScopeUrl": "https://webchirp.org/",
-  "minSdkVersion": 21,
+  "minSdkVersion": 24,
   "orientation": "default",
   "fingerprints": [],
   "additionalTrustedOrigins": [],

@@ -55,7 +55,7 @@ android {
     namespace "com.hf2j.webchirp"
     defaultConfig {
         applicationId "com.hf2j.webchirp"
-        minSdkVersion 21
+        minSdkVersion 24
         targetSdkVersion 36
         versionCode 1
         versionName "1"
