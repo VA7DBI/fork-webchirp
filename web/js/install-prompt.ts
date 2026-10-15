@@ -10,6 +10,10 @@
 //
 // Cancelling is only safe where a replacement affordance exists, so this module
 // is loaded by index.html alone: about.html keeps the browser's own prompt.
+// The one exception is the Android app (web/js/android-app.ts), where the site
+// is already installed from Google Play and an install would add a second copy
+// beside it: there the browser's offer is cancelled and nothing is parked, so
+// no install is offered at all.
 //
 // Measurement stays in web/js/analytics.ts, whose bindInstallTracking() listens
 // for the same event without cancelling it. Two listeners on one event is
@@ -19,6 +23,8 @@
 // Loaded early, from the document head, because the event can fire before the
 // UI controller is constructed: the app boots behind a serial capability check,
 // and a listener registered after the event has already fired never sees it.
+
+import { runsInAndroidApp } from "./android-app.ts";
 
 // The window this module was bound against, so callers elsewhere do not thread
 // one through and a test can drive the module against a fake.
@@ -96,8 +102,9 @@ function notifyAvailability() {
 }
 
 // Whether an install can be raised right now. False in every browser that never
-// fires the event at all (every one on iOS, Firefox), and in a window that is
-// already running installed -- so a caller needs no platform check of its own.
+// fires the event at all (every one on iOS, Firefox), in a window that is
+// already running installed, and inside the Android app -- so a caller needs no
+// platform check of its own.
 export function isInstallAvailable() {
   return deferredPrompt !== null;
 }
@@ -154,6 +161,9 @@ export function bindInstallPrompt(win = target) {
     return;
   }
   target = win;
+  // Read once, at load: the launch query is on the first page's URL, and
+  // runsInAndroidApp() carries it through the rest of the session itself.
+  const inAndroidApp = runsInAndroidApp(win);
 
   win.addEventListener("beforeinstallprompt", (event) => {
     // Nothing is parked unless the browser's own prompt was actually
@@ -163,6 +173,9 @@ export function bindInstallPrompt(win = target) {
       return;
     }
     event.preventDefault();
+    if (inAndroidApp) {
+      return;
+    }
     deferredPrompt = event;
     notifyAvailability();
   });

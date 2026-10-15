@@ -7,6 +7,7 @@ import {
   onInstallAvailabilityChange,
   promptInstall,
 } from "../../web/js/install-prompt.ts";
+import { ANDROID_APP_LAUNCH_PARAMS, isAndroidAppLaunch } from "../../web/js/android-app.ts";
 import { makeWindow } from "../support/fake-window.mjs";
 
 // Guards the one thing this module does that is not undoable from the UI: it
@@ -34,6 +35,9 @@ function fakePromptEvent(outcome = "accepted") {
     userChoice: Promise.resolve({ outcome }),
   };
 }
+
+// The query the Android app's launcher opens the site with.
+const APP_LAUNCH_SEARCH = `?${new URLSearchParams(ANDROID_APP_LAUNCH_PARAMS)}`;
 
 test("nothing is installable until the browser offers it", async () => {
   bindInstallPrompt(makeWindow());
@@ -218,4 +222,61 @@ test("a browser that refuses to open a channel still offers the install", () => 
   // Nothing to post to, and the local install must still stand the button down.
   assert.doesNotThrow(() => win.dispatch("appinstalled", {}));
   assert.equal(isInstallAvailable(), false);
+});
+
+// Inside the Android app the site is already installed from Google Play, so an
+// install from the page would put a second copy beside it. The browser's own
+// offer is cancelled as everywhere else, and nothing is parked in its place.
+test("inside the Android app no install is offered", () => {
+  const win = makeWindow({ search: APP_LAUNCH_SEARCH });
+  bindInstallPrompt(win);
+  const event = fakePromptEvent();
+  win.dispatch("beforeinstallprompt", event);
+
+  assert.equal(event.prevented, true);
+  assert.equal(isInstallAvailable(), false);
+});
+
+test("the app launch holds for the rest of the tab's session", () => {
+  const launch = makeWindow({ search: APP_LAUNCH_SEARCH });
+  bindInstallPrompt(launch);
+
+  // A reload or a trip to about.html and back arrives without the query; the
+  // same tab's sessionStorage is what still says this is the app.
+  const later = makeWindow();
+  later.sessionStorage = launch.sessionStorage;
+  bindInstallPrompt(later);
+  later.dispatch("beforeinstallprompt", fakePromptEvent());
+  assert.equal(isInstallAvailable(), false);
+});
+
+test("blocked site data still keeps the install off the app's launch page", () => {
+  const win = makeWindow({ search: APP_LAUNCH_SEARCH });
+  win.sessionStorage = {
+    getItem() {
+      throw new Error("site data is blocked");
+    },
+    setItem() {
+      throw new Error("site data is blocked");
+    },
+  };
+  assert.doesNotThrow(() => bindInstallPrompt(win));
+  win.dispatch("beforeinstallprompt", fakePromptEvent());
+  assert.equal(isInstallAvailable(), false);
+});
+
+test("only the full launch query marks the app", () => {
+  assert.equal(isAndroidAppLaunch(APP_LAUNCH_SEARCH), true);
+  assert.equal(isAndroidAppLaunch(`${APP_LAUNCH_SEARCH}&radio=uv5r`), true);
+  // A link that reuses one of the UTM values is an ordinary visit.
+  const [[key, value]] = Object.entries(ANDROID_APP_LAUNCH_PARAMS);
+  assert.equal(isAndroidAppLaunch(`?${key}=${value}`), false);
+  assert.equal(isAndroidAppLaunch("?utm_source=pwa&utm_medium=homescreen"), false);
+  assert.equal(isAndroidAppLaunch(""), false);
+
+  // An ordinary visit in a fresh tab still gets the install.
+  const win = makeWindow({ search: "?utm_source=pwa&utm_medium=homescreen" });
+  bindInstallPrompt(win);
+  win.dispatch("beforeinstallprompt", fakePromptEvent());
+  assert.equal(isInstallAvailable(), true);
 });
