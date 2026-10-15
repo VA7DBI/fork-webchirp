@@ -282,6 +282,12 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `tests/build/asset-links.mjs` checks it. Its `package_name` must equal the
   Android app's application id, `com.hf2j.webchirp`, and its fingerprints must
   include the Play App Signing key's SHA-256, not only the upload key's.
+- The Android app must launch the site with `ANDROID_APP_LAUNCH_PARAMS`
+  (`web/js/android-app.ts`) as its query: its twa-manifest `startUrl` is
+  `/?utm_source=android_app&utm_medium=twa`. That query is the only way a page
+  knows it runs inside the app; `runsInAndroidApp()` reads it and keeps it for
+  the tab's session. Code that must behave differently in the app asks that,
+  never the user agent or `document.referrer`.
 - We do not aim to support screen readers at this time.
 
 ## Change Process
