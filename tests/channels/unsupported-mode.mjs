@@ -60,7 +60,7 @@ test("the preflight names the Mode cell the binary export refuses", async () => 
   await harness.rpc("close_session", { session_id: sessionId });
 });
 
-test("a radio with no image to check against leaves the export's own refusal to the export", async () => {
+test("a radio with no image to check against leaves the export's own refusal to the export", async (t) => {
   // A fresh KG-XS20G Plus session: kg935g declares no image size, so with
   // nothing downloaded or opened its blank radio cannot read a memory.
   const harness = await sharedHarness();
@@ -70,11 +70,22 @@ test("a radio with no image to check against leaves the export's own refusal to 
     class_name: "KGXS20GPlusRadio",
   });
 
+  // The harness prints the runtime's debug panel lines to stdout.
+  const logged = t.mock.method(console, "log", () => {});
   const preflight = await harness.rpc("validate_rows_for_upload", {
     session_id: sessionId,
     rows: [{ ...AM_ROW, Mode: "NFM" }],
   });
+  logged.mock.restore();
   assert.deepEqual(preflight, { valid: true, issues: [], warnings: [] });
+  // Nothing after the probe sees this radio, so its traceback is the only
+  // record of why the driver's own checks were skipped.
+  const fallback = logged.mock.calls
+    .map((call) => String(call.arguments[0]))
+    .find((line) => line.includes("ROW CHECK column rules only"));
+  assert.ok(fallback, "the fallback to column rules is logged");
+  assert.match(fallback, /Traceback \(most recent call last\)/);
+  assert.match(fallback, /'NoneType' object has no attribute 'memory'/);
 
   const error = await rejectionOf(
     harness.rpc("export_image_base64", {

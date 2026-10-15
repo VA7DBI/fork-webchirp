@@ -11,6 +11,7 @@ preflight and the upload can never disagree about what a row means.
 from __future__ import annotations
 
 import re
+import traceback
 from typing import TYPE_CHECKING
 
 from chirp import chirp_common
@@ -453,15 +454,20 @@ def _readable_radio_context(
     rows get the column rules only, and the upload or export that follows,
     which needs an image from such a driver, says so itself. A radio built
     from an image is not probed: what it raises is the image's fault, and is
-    reported as it is.
+    reported as it is. The probe's traceback goes to the debug panel, since
+    no later check sees this radio: a driver failing some other way would
+    otherwise look exactly like the unset map.
     """
     radio, level_map, bounds = _session_radio_context(session)
     if radio is None or session is None or session.has_backing_image:
         return radio, level_map, bounds
     try:
         radio.get_memory(bounds[0] if bounds else 0)
-    except Exception as exc:
-        _log_debug(f"ROW CHECK column rules only for {session.session_id}: {exc}")
+    except Exception:
+        _log_debug(
+            f"ROW CHECK column rules only for {session.session_id}: its radio, "
+            f"built without an image, cannot read a memory\n{traceback.format_exc()}"
+        )
         return None, _level_map_for_radio(None, session), bounds
     return radio, level_map, bounds
 
