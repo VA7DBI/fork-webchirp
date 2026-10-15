@@ -68,6 +68,26 @@ test("the app's name, colours and icons are the site's", () => {
   }
 });
 
+// Bubblewrap renders the launcher icons, splash screens and store icon from
+// the web icons when it regenerates the project, and nothing else records
+// which pixels it used: manifest-checksum.txt covers twa-manifest.json alone,
+// and a replaced icon keeps its URL. android/icon-sources.json holds the
+// SHA-256 of each icon the project was generated from, so new artwork on the
+// site fails here until the app is regenerated with it.
+test("the app's icons were generated from the site's current icons", () => {
+  const recorded = readJson(path.join(androidDir, "icon-sources.json"));
+  const urls = ["iconUrl", "maskableIconUrl", "monochromeIconUrl"].map((field) => twa[field]).filter(Boolean);
+  assert.deepEqual(Object.keys(recorded).sort(), [...urls].sort(), "android/icon-sources.json lists other icons");
+  for (const url of urls) {
+    const actual = createHash("sha256").update(readFileSync(path.join(webDir, new URL(url).pathname))).digest("hex");
+    assert.equal(
+      recorded[url],
+      actual,
+      `${url} changed: run bubblewrap update in android/, then record ${actual} in android/icon-sources.json`,
+    );
+  }
+});
+
 // Android's WebView has no WebUSB, Web Serial or Web Bluetooth, so a WebView
 // fallback would open the app on a phone without Chrome and never reach a
 // radio. Custom Tabs use whatever browser is there, with its own APIs.

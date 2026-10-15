@@ -34,6 +34,11 @@ every regeneration replace both `jcenter()` lines in `build.gradle` with
 `twa-manifest.json`, `manifest-checksum.txt` and the regenerated files
 together.
 
+The launcher icons, splash screens and store icon are rendered from the site's
+icons, so new artwork in `web/images/` means regenerating as well. Record each
+icon's SHA-256 in `icon-sources.json` afterwards; the test that fails prints
+the new value.
+
 ## Releasing
 
 The upload key signs what you upload; Google re-signs every install with the
