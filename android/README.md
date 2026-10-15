@@ -28,7 +28,10 @@ bubblewrap update --skipVersionUpgrade   # same version, e.g. a colour change
 bubblewrap update                        # next versionCode, for a release
 ```
 
-Commit `twa-manifest.json`, `manifest-checksum.txt` and the regenerated files
+Bubblewrap's template still lists the retired `jcenter()` repository, so after
+every regeneration replace both `jcenter()` lines in `build.gradle` with
+`mavenCentral()`; `tests/build/android-app.mjs` fails until you do. Then commit
+`twa-manifest.json`, `manifest-checksum.txt` and the regenerated files
 together.
 
 ## Releasing

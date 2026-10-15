@@ -298,7 +298,9 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   and running `bubblewrap update --skipVersionUpgrade` in `android/` (plain
   `bubblewrap update` for a release, which bumps the version), then commit the
   manifest, `manifest-checksum.txt` and the regenerated files together. Never
-  edit generated files by hand: the next update overwrites them.
+  edit generated files by hand: the next update overwrites them. The one
+  exception is re-applied after every update: replace the template's
+  `jcenter()` with `mavenCentral()` in `android/build.gradle`.
   `tests/build/android-app.mjs` holds the project to the site (host, package,
   launch query, name, colours, icons, Custom Tabs fallback, Play's minimum
   target SDK) and to its manifest; `.github/workflows/android.yml` builds it.

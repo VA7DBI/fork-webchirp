@@ -90,6 +90,18 @@ test("the generated project is current with twa-manifest.json", () => {
   assert.ok(appGradle.includes(`versionCode ${twa.appVersionCode}\n`), "build.gradle has another versionCode");
 });
 
+// Bubblewrap 1.27.0's template still resolves from jcenter(), a retired
+// repository code scanning flags as an untrusted artifact source. The
+// committed android/build.gradle lists mavenCentral() in its place, and every
+// regeneration writes jcenter() back.
+test("the build resolves only from Google's Maven and Maven Central", () => {
+  const rootGradle = readFileSync(path.join(androidDir, "build.gradle"), "utf8");
+  for (const [name, text] of [["android/build.gradle", rootGradle], ["android/app/build.gradle", appGradle]]) {
+    assert.doesNotMatch(text, /\bjcenter\(\)/, `${name} lists jcenter(); replace it with mavenCentral()`);
+  }
+  assert.match(rootGradle, /\bmavenCentral\(\)/);
+});
+
 test("the app targets the API level Google Play requires", () => {
   const target = Number(appGradle.match(/targetSdkVersion (\d+)/)?.[1]);
   assert.ok(target >= PLAY_MIN_TARGET_SDK, `targetSdkVersion ${target} is below Play's ${PLAY_MIN_TARGET_SDK}`);
