@@ -202,9 +202,10 @@ def _apply_rows_to_radio_instance(
     Every row must name its own slot. A blank Location is refused rather
     than read as 0, which on a radio numbered from 0 is a real memory the row
     would silently replace, and a slot two rows share is refused rather than
-    left to the last of them. The upload preflight reports both as cells, but
-    the binary export runs no preflight, so this is the check every caller
-    gets.
+    left to the last of them. The preflight the UI runs before an upload or a
+    binary export reports these, and every value the driver refuses, as
+    cells; this is the check that still holds for a caller that ran none, such
+    as the agent CLI, or rows that changed after their preflight.
     """
     level_map = _level_map_for_radio(radio, session)
     valid_numbers = set(_iter_memory_numbers(radio))

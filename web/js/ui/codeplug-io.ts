@@ -269,9 +269,27 @@ export function createCodeplugIo(ctx: UiContext) {
     log.setStatus(`Exported ${fileName}`);
   }
 
+  // Build the selected radio's .img from the grid and settings and save it.
+  // The runtime writes the rows into the image the way an upload writes them
+  // to the radio, and refuses the same values, so the export runs the upload's
+  // preflight first: a value the driver rejects (Mode AM on a radio with only
+  // FM and NFM) blocks it as a highlighted cell, rather than reaching the
+  // runtime and coming back as an error with a traceback, which reads as a
+  // defect and is reported to Sentry as one.
   async function exportBinaryCodeplug() {
     if (!state.selectedRadio) {
       log.setStatus("Search for and select a radio first.");
+      return;
+    }
+    log.setStatus("Running export preflight validation...");
+    const preflight = await ctx.serial.runUploadPreflight();
+    if (!preflight.valid) {
+      const count = preflight.issues.length;
+      log.setStatus(
+        count > 0
+          ? `Export blocked: ${count} invalid value(s) highlighted in red in ${ctx.actions.currentViewLabel()}.`
+          : "Export blocked: preflight validation failed.",
+      );
       return;
     }
     log.setStatus("Preparing CHIRP binary codeplug...");

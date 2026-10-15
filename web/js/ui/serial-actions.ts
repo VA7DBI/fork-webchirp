@@ -23,7 +23,7 @@ import {
 import { PORT_LOST_REASONS } from "../serial-bridge.ts";
 import { requireRuntimeApi } from "./state.ts";
 import type { UiContext } from "../types/ui-context.js";
-import type { CatalogRadio } from "../runtime-rpc.ts";
+import type { CatalogRadio, RowIssue, SettingIssue } from "../runtime-rpc.ts";
 import type { RadioSessionHandle } from "./state.ts";
 
 // How the status line words a loss the bridge caused itself, by the reason it
@@ -511,8 +511,10 @@ export function createSerialActions(ctx: UiContext) {
   }
 
   // Validate rows and radio-wide settings before a write, highlighting every
-  // rejected value so the user can see what blocked the upload.
-  async function runUploadPreflight() {
+  // rejected value so the user can see what blocked it. An upload runs it, and
+  // so does a binary export (codeplug-io), which writes the same rows into an
+  // image and would refuse the same values.
+  async function runUploadPreflight(): Promise<{ valid: boolean; issues: Array<RowIssue | SettingIssue> }> {
     if (!state.selectedRadio) {
       return { valid: false, issues: [{ rowIndex: -1, column: "", message: "No radio selected." }] };
     }
@@ -767,5 +769,6 @@ export function createSerialActions(ctx: UiContext) {
     refreshSerialConnectToggleLabel,
     updateSerialActionState,
     updateCloneProgress,
+    runUploadPreflight,
   };
 }
