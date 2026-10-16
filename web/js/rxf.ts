@@ -1,4 +1,4 @@
-// RXF is the XML dialect przemienniki.net publishes and api.codeplug.org
+// RXF is the XML dialect przemienniki.net publishes and api.webchirp.org
 // re-serves for every directory it fronts. This is its one parser:
 // parseRxfRecords reads a response into RepeaterRecords
 // (web/js/repeater-record.ts) for both readers, the bulk directory query

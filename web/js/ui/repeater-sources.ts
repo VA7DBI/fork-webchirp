@@ -563,7 +563,7 @@ export function createRepeaterAdapters(
       logPrefix: actionLabel.toUpperCase(),
       toolbarButton,
       // Proxy-dependent sources have null endpoints when the configured base
-      // is blank. IRTS always receives its default api.codeplug.org endpoints.
+      // is blank. IRTS always receives its default api.webchirp.org endpoints.
       available: Boolean(apiUrl && metaUrl),
       // These directories filter upstream and accept a country on its own, so
       // a query with no position is a whole-country search rather than an

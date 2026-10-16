@@ -899,7 +899,7 @@ function cityLabel(city: City): string {
   return context ? `${city.name}, ${context}` : city.name;
 }
 
-/** One place the gazetteer (api.codeplug.org /cities) suggests. */
+/** One place the gazetteer (api.webchirp.org /cities) suggests. */
 export interface City {
   name: string;
   region?: string;
