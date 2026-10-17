@@ -6,9 +6,9 @@
 // is invisible from both sides: CHIRP does not know it exists, and in Sentry a
 // rule that quietly stops matching looks exactly like a failure that stopped
 // happening. So the tests here pin both directions -- what is dropped and what
-// must still get through -- and check the names against chirp/chirp/errors.py,
-// because a rename upstream is what would break the rule without breaking
-// anything else.
+// must still get through -- and check the names against the CHIRP module that
+// defines each (chirp/chirp/errors.py, chirp/chirp/settings.py), because a
+// rename upstream is what would break the rule without breaking anything else.
 //
 // Each failure is the RuntimeCallError the dispatcher throws, and the rule is
 // checked where Sentry applies it: beforeSend, handed the error as the hint's
@@ -34,10 +34,17 @@ function isIgnored(error) {
   return initOptions().beforeSend(eventFor(error), { originalException: error }) === null;
 }
 
-// A chirp.errors failure, as "chirp.errors.InvalidDataError" names it.
+// The class and defining module a qualified name such as
+// "chirp.settings.InvalidValueError" spells.
+function splitQualifiedName(qualifiedName) {
+  const dot = qualifiedName.lastIndexOf(".");
+  return { module: qualifiedName.slice(0, dot), type: qualifiedName.slice(dot + 1) };
+}
+
+// A CHIRP failure, as "chirp.errors.InvalidDataError" names it.
 function chirpError(qualifiedName, message) {
-  const type = qualifiedName.split(".").pop();
-  return runtimeCallError(type, message, { module: "chirp.errors" }, "parse_csv");
+  const { module, type } = splitQualifiedName(qualifiedName);
+  return runtimeCallError(type, message, { module }, "parse_csv");
 }
 
 // The user's file, the user's radio, the user's cable. None of these is a
@@ -52,17 +59,24 @@ const DROPPED = [
   ["chirp.errors.RadioNoResponse", "No response from radio"],
   ["chirp.errors.RadioNoContactLikelyK1", "Check connector and cabling!"],
   ["chirp.errors.RadioFixedBanks", "This radio has fixed banks"],
+  // chirp/chirp/settings.py's own InvalidValueError, which 18 drivers import
+  // in place of the chirp.errors one: the KG-UV9GX refusing a frequency outside
+  // its bands (WEBCHIRP-FRONTEND-2D, -2E).
+  ["chirp.settings.InvalidValueError", "Frequency 520.000000 is not with in 400.000000-480.000000"],
 ];
 
-// Three that stay reportable, and why each one is a defect rather than a
+// The ones that stay reportable, and why each one is a defect rather than a
 // circumstance: the first two can only be reached by this app asking CHIRP for
-// something impossible, and RadioError is the drivers' catch-all -- the place a
+// something impossible, RadioError is the drivers' catch-all -- the place a
 // short read from the Web Serial stand-in would surface, which is the one
-// failure mode upstream CHIRP has never had to handle.
+// failure mode upstream CHIRP has never had to handle -- and chirp.settings'
+// other two classes are a driver building a settings tree CHIRP rejects.
 const REPORTED = [
   ["chirp.errors.InvalidMemoryLocation", "Location 129 does not exist"],
   ["chirp.errors.FrozenMemoryError", "Frozen memory is immutable"],
   ["chirp.errors.RadioError", "Radio did not respond"],
+  ["chirp.settings.InternalError", "Setting abc is not a scalar"],
+  ["chirp.settings.InvalidNameError", "Name must not contain '%' character"],
 ];
 
 test("a CSV the user's spreadsheet exported wrong is not a bug report", () => {
@@ -89,12 +103,25 @@ test("this app's own errors are clear of the rule despite subclassing RadioError
   assert.ok(detection.pythonBases.includes("RadioError"));
   assert.equal(isIgnored(detection), false);
   assert.equal(isIgnored(runtimeCallError("RuntimeUnsupportedError", "Not a clone-mode radio")), false);
-  // A class the list names, but defined somewhere other than chirp.errors, is
-  // not the class the list means.
+  // A class the list names, but defined somewhere other than a module the list
+  // names it under, is not the class the list means.
   assert.equal(
     isIgnored(runtimeCallError("InvalidDataError", "No channels found", { module: "webchirp_bridge.x" })),
     false,
   );
+  assert.equal(
+    isIgnored(runtimeCallError("InvalidValueError", "Value 9 not in range 0-7", { module: "webchirp_bridge.x" })),
+    false,
+  );
+  // chirp.settings is named for InvalidValueError alone, not for every class a
+  // chirp.errors entry lists.
+  assert.equal(
+    isIgnored(runtimeCallError("InvalidDataError", "No channels found", { module: "chirp.settings" })),
+    false,
+  );
+  // The module name is the Python side's text, never a key into Object's own
+  // properties.
+  assert.equal(isIgnored(runtimeCallError("toString", "x", { module: "constructor" })), false);
   // The one exception, dropped by its own rule rather than this one.
   assert.ok(isIgnored(runtimeCallError(
     "RuntimePreconditionError",
@@ -114,6 +141,16 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
   );
   assert.ok(isIgnored(notAnImage));
 
+  // The settings module's InvalidValueError counts as a cause just as the
+  // errors one does: a value the driver refused, re-raised by whatever wrapped
+  // the driver call.
+  const refusedFromSettings = runtimeCallError(
+    "RuntimeUnsupportedError",
+    "Channel row 3: Frequency 520.000000 is not with in 400.000000-480.000000",
+    { causes: [{ type: "InvalidValueError", module: "chirp.settings", message: "Frequency 520.000000 is not with in 400.000000-480.000000", explicit: true }] },
+  );
+  assert.ok(isIgnored(refusedFromSettings));
+
   // A driver that broke while matching the image is a defect, wrapped or not.
   const driverBroke = runtimeCallError(
     "ImageDetectionError",
@@ -128,6 +165,10 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
     causes: [{ type: "RadioNoResponse", module: "webchirp_bridge.x", message: "No response", explicit: true }],
   });
   assert.equal(isIgnored(lookalike), false);
+  const settingsLookalike = runtimeCallError("RuntimeUnsupportedError", "Settings could not be built", {
+    causes: [{ type: "InternalError", module: "chirp.settings", message: "Setting abc is not a scalar", explicit: true }],
+  });
+  assert.equal(isIgnored(settingsLookalike), false);
 
   // Only the nearest cause counts: what it was itself raised from was the
   // wrapper's author's to judge.
@@ -146,6 +187,10 @@ test("a wrapper is judged by the CHIRP class it was raised from", () => {
     causes: [{ type: "RadioNoResponse", module: "chirp.errors", message: "No response", explicit: false }],
   }, "download_selected_radio");
   assert.equal(isIgnored(whileHandling), false);
+  const whileHandlingSettings = runtimeCallError("TypeError", "'NoneType' object is not subscriptable", {
+    causes: [{ type: "InvalidValueError", module: "chirp.settings", message: "Value 9 not in range 0-7", explicit: false }],
+  });
+  assert.equal(isIgnored(whileHandlingSettings), false);
 });
 
 test("a native JS error is never dropped by the runtime rule", () => {
@@ -155,18 +200,31 @@ test("a native JS error is never dropped by the runtime rule", () => {
   assert.equal(isIgnored(error), false);
 });
 
-test("every class the rule names still exists in CHIRP", () => {
-  const source = fs.readFileSync(path.join(repoRoot, "chirp", "chirp", "errors.py"), "utf8");
+// The top-level classes a CHIRP module defines, read from its source under
+// chirp/ ("chirp.settings" is chirp/chirp/settings.py).
+function classesDefinedBy(module) {
+  const file = path.join(repoRoot, "chirp", ...module.split(".")) + ".py";
+  const source = fs.readFileSync(file, "utf8");
   const defined = new Set([...source.matchAll(/^class\s+(\w+)/gm)].map((match) => match[1]));
-  assert.ok(defined.size > 0, "chirp/chirp/errors.py should define classes");
+  assert.ok(defined.size > 0, `${file} should define classes`);
+  return defined;
+}
+
+test("every class the rule names still exists in CHIRP", () => {
   for (const [name] of [...DROPPED, ...REPORTED]) {
-    assert.ok(defined.has(name.split(".").pop()), `${name} is no longer defined by CHIRP`);
+    const { module, type } = splitQualifiedName(name);
+    assert.ok(classesDefinedBy(module).has(type), `${name} is no longer defined by CHIRP`);
   }
-  // And the list the rule reads is exactly the dropped set above, so a class
-  // added to it without a test here fails.
+  // And the list the rule reads is exactly the dropped set above, module by
+  // module, so a class added to it without a test here fails.
+  const dropped = {};
+  for (const [name] of DROPPED) {
+    const { module, type } = splitQualifiedName(name);
+    (dropped[module] ??= []).push(type);
+  }
   assert.deepEqual(
-    [...IGNORED_CHIRP_ERRORS].sort(),
-    DROPPED.map(([name]) => name.split(".").pop()).sort(),
+    Object.fromEntries(Object.entries(IGNORED_CHIRP_ERRORS).map(([module, types]) => [module, [...types].sort()])),
+    Object.fromEntries(Object.entries(dropped).map(([module, types]) => [module, types.sort()])),
   );
 });
 
