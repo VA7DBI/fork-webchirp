@@ -163,7 +163,7 @@ def _extra_setting_field(
     value = setting.value
     if isinstance(value, list):
         return None
-    field = _serialize_setting_value(value)
+    field = _serialize_setting_value(value, setting_name=str(setting.get_name()))
     if field.get("current") is not None and not _is_primitive(field["current"]):
         return None
     field["name"] = str(setting.get_name())

@@ -89,7 +89,9 @@ export const RUNTIME_PYTHON_FILES = Object.freeze([
   "webchirp_bridge/serial_pipe.py",
   "webchirp_bridge/session.py",
   "webchirp_bridge/workarounds/__init__.py",
+  "webchirp_bridge/workarounds/ft1d.py",
   "webchirp_bridge/workarounds/uv5r.py",
+  "webchirp_bridge/workarounds/vx8.py",
 ]);
 
 // Where the CHIRP archive lives under web/ (and so under dist/), and the two
