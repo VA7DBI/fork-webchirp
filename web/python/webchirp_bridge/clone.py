@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from chirp import chirp_common
 from js import serial_prepare_clone
 
+from webchirp_bridge import workarounds
 from webchirp_bridge.channel_rows import _csv_text_for_rows
 from webchirp_bridge.jsbridge import _await_js, _js_to_py, _log_debug, _make_status_logger
 from webchirp_bridge.radio_memories import (
@@ -203,7 +204,7 @@ def _upload_selected_radio_sync(
     # reports the transport the pipe has to name; nothing above touches it.
     transport = _prepare_clone_session(image_cls)
     radio.set_pipe(_new_serial_pipe(image_cls, transport))
-    radio.sync_out()
+    workarounds.sync_out(radio)
     session.record_radio(radio, session.image_origin)
     return {"uploaded": True, "settings": settings_result["settings"]}
 

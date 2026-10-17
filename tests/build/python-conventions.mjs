@@ -90,3 +90,52 @@ test("each check finds the violation it exists for", async () => {
     assert.deepEqual(found.import_cycles, ["alpha -> beta -> alpha"]);
   });
 });
+
+test("a subpackage's modules are checked and join the import graph", async () => {
+  await withTempDir("python-conventions-", async (dir) => {
+    const pkg = path.join(dir, "webchirp_bridge");
+    const sub = path.join(pkg, "sub");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(path.join(dir, "runtime_bridge.py"), "from __future__ import annotations\n");
+    writeFileSync(path.join(pkg, "__init__.py"), "from __future__ import annotations\n");
+    writeFileSync(path.join(pkg, "delta.py"), [
+      "from __future__ import annotations",
+      "",
+      "from webchirp_bridge.sub.gamma import helper",
+      "",
+    ].join("\n"));
+    // A package importing its own submodule is how a hook reaches its
+    // workarounds; Python runs the package first, so that is no cycle.
+    writeFileSync(path.join(sub, "__init__.py"), [
+      "from __future__ import annotations",
+      "",
+      "from webchirp_bridge.sub import gamma",
+      "",
+    ].join("\n"));
+    // Relative imports count from the importing module's package: ".." is
+    // the bridge package here, and "." is sub.
+    writeFileSync(path.join(sub, "gamma.py"), [
+      "from .. import delta",
+      "",
+    ].join("\n"));
+    writeFileSync(path.join(sub, "alpha.py"), [
+      "from __future__ import annotations",
+      "",
+      "from . import beta",
+      "",
+    ].join("\n"));
+    writeFileSync(path.join(sub, "beta.py"), [
+      "from __future__ import annotations",
+      "",
+      "from .alpha import helper",
+      "",
+    ].join("\n"));
+    const found = report(dir);
+    assert.deepEqual(found.future_annotations, ["webchirp_bridge/sub/gamma.py:1 lacks 'from __future__ import annotations'"]);
+    assert.deepEqual(found.modules_seen, ["__init__", "delta", "sub", "sub.alpha", "sub.beta", "sub.gamma"]);
+    assert.deepEqual(found.import_cycles, [
+      "delta -> sub.gamma -> delta",
+      "sub.alpha -> sub.beta -> sub.alpha",
+    ]);
+  });
+});
