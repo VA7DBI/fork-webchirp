@@ -20,8 +20,18 @@ PACKAGE = "webchirp_bridge"
 
 
 def _runtime_files(python_dir: Path) -> list[Path]:
-    """The runtime entry point and every bridge module, in a stable order."""
-    return [python_dir / "runtime_bridge.py", *sorted((python_dir / PACKAGE).glob("*.py"))]
+    """The runtime entry point and every bridge module, subpackages' included,
+    in a stable order."""
+    return [python_dir / "runtime_bridge.py", *sorted((python_dir / PACKAGE).rglob("*.py"))]
+
+
+def _module_name(package_dir: Path, path: Path) -> str:
+    """A bridge module's dotted name inside the package (``clone``,
+    ``workarounds``, ``workarounds.uv5r``); the package's own is ``__init__``."""
+    parts = path.relative_to(package_dir).with_suffix("").parts
+    if len(parts) > 1 and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
 
 
 def _type_checking_nodes(tree: ast.Module) -> set[int]:
@@ -161,7 +171,19 @@ def check_function_comments(name: str, tree: ast.Module, lines: list[str]) -> li
     return found
 
 
-def _package_imports(tree: ast.Module, guarded: set[int]) -> set[str]:
+def _known_module(name: str, modules: set[str]) -> str:
+    """The longest prefix of the dotted ``name`` that is a bridge module, so
+    ``from webchirp_bridge.a import b`` counts as importing ``a.b`` when that
+    is a module and ``a`` when ``b`` is a name inside it."""
+    parts = name.split(".")
+    for end in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:end])
+        if candidate in modules:
+            return candidate
+    return parts[0]
+
+
+def _package_imports(tree: ast.Module, guarded: set[int], modules: set[str]) -> set[str]:
     """Bridge modules this module imports at runtime (TYPE_CHECKING excluded)."""
     deps: set[str] = set()
     for node in ast.walk(tree):
@@ -171,14 +193,14 @@ def _package_imports(tree: ast.Module, guarded: set[int]) -> set[str]:
             module = node.module or ""
             if node.level == 1:
                 deps.update([module.split(".")[0]] if module else [a.name for a in node.names])
-            elif module == PACKAGE:
-                deps.update(a.name for a in node.names)
-            elif module.startswith(PACKAGE + "."):
-                deps.add(module.split(".")[1])
+            elif module == PACKAGE or module.startswith(PACKAGE + "."):
+                base = module[len(PACKAGE) + 1:]
+                for alias in node.names:
+                    deps.add(_known_module(f"{base}.{alias.name}".lstrip("."), modules))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith(PACKAGE + "."):
-                    deps.add(alias.name.split(".")[1])
+                    deps.add(_known_module(alias.name[len(PACKAGE) + 1:], modules))
     return deps
 
 
@@ -218,8 +240,11 @@ def run(python_dir: Path) -> dict[str, list[str]]:
         "function_comments": [],
         "import_cycles": [],
     }
+    package_dir = python_dir / PACKAGE
+    files = _runtime_files(python_dir)
+    modules = {_module_name(package_dir, p) for p in files if p.is_relative_to(package_dir)}
     graph: dict[str, set[str]] = {}
-    for path in _runtime_files(python_dir):
+    for path in files:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
         name = str(path.relative_to(python_dir))
@@ -228,8 +253,10 @@ def run(python_dir: Path) -> dict[str, list[str]]:
         report["radio_params_not_any"] += check_radio_params_not_any(name, tree)
         report["annotation_only_imports"] += check_annotation_only_imports(name, tree)
         report["function_comments"] += check_function_comments(name, tree, source.split("\n"))
-        if path.parent.name == PACKAGE:
-            graph[path.stem] = _package_imports(tree, _type_checking_nodes(tree))
+        if path.is_relative_to(package_dir):
+            graph[_module_name(package_dir, path)] = _package_imports(
+                tree, _type_checking_nodes(tree), modules
+            )
     report["import_cycles"] = check_import_cycles(graph)
     report["modules_seen"] = sorted(graph)
     return report
