@@ -12,7 +12,9 @@ import { SimulatedUv5rBridge } from "../support/simulated-uv5r.mjs";
 // (Sentry WEBCHIRP-FRONTEND-22). These tests run the real
 // driver against a simulated radio, through the same RPC the browser calls:
 // the finished upload succeeds and is recorded on the session, and a real
-// failure on the same path still fails.
+// failure on the same path still fails. The fix is a workaround
+// (web/python/webchirp_bridge/workarounds/uv5r.py); the last test shows the
+// driver still needs it.
 
 const IMAGE = "Baofeng_UV-5R.img";
 const OVERRIDE = "UseAtOwnRisk";
@@ -104,4 +106,31 @@ test("a uv5r upload with the range override that the radio refuses still fails",
     },
   );
   assert.equal(radio.writtenAddresses.at(-1), 0x07f0);
+});
+
+test("without its workaround, the uv5r driver still reports a finished override upload as an error", async () => {
+  // When this fails, the pinned CHIRP no longer raises after a finished
+  // override upload (kk7ds/chirp#1677): delete workarounds/uv5r.py, its entry
+  // in the sync_out hook, and this test.
+  const { harness, radio, loaded } = await loadOntoSimulatedRadio();
+  // This runtime is the test's own (a custom bridge is never shared), so
+  // emptying the hook's table reaches no other test.
+  await harness.runPython(`
+import webchirp_bridge.workarounds as _workarounds
+_workarounds._SYNC_OUT.clear()
+`);
+
+  await assert.rejects(
+    harness.rpc("upload_selected_radio", {
+      session_id: loaded.sessionId,
+      rows: loaded.rows,
+      settings_groups: withRangeOverride(loaded.settings),
+    }),
+    (error) => {
+      assert.ok(isPythonError(error, "RadioError"), `expected a RadioError, got ${error}`);
+      assert.match(error.message, /This is NOT an error/);
+      return true;
+    },
+  );
+  assert.deepEqual(radio.writtenAddresses, ALL_RANGE_ADDRESSES);
 });
