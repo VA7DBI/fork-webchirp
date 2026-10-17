@@ -24,7 +24,7 @@ from webchirp_bridge.jsbridge import _log_debug
 from webchirp_bridge.session import resolve_session
 
 if TYPE_CHECKING:
-    from typing import Any, Iterable, Optional, Sequence, TypeAlias
+    from typing import Any, Callable, Iterable, Optional, Sequence, TypeAlias
 
     # What the settings walkers recurse over: the top-level RadioSettings is a
     # list subclass, every node below it is a RadioSettingGroup -- including
@@ -99,14 +99,62 @@ def _setting_issue(path: Sequence[Any], value_index: int, message: Any) -> dict[
     return {"path": _setting_path(path), "valueIndex": int(value_index), "message": str(message)}
 
 
+def _setting_value_bound(
+    value: chirp_settings.RadioSettingValue,
+    getter_name: str,
+    attr_name: str,
+    setting_name: str,
+) -> Any:
+    """Read one numeric bound of a setting value, never letting the driver raise.
+
+    The getter is what CHIRP's own editor reads, and drivers may replace it on
+    the instance with a bound computed from a sibling: `ft1d.py:1778` sets a
+    SmartBeacon low speed's get_max to ``int(high_val.get_value()) - 1``. When
+    that sibling never initialized -- a high speed byte outside its own range,
+    which every zeroed image has -- the getter reaches ``int(None)``, and one bad
+    bound used to fail the whole settings tree, and with it every load,
+    download and export of the radio (WEBCHIRP-FRONTEND-2G). The bound the
+    value was constructed with is still on it, so that is reported instead and
+    the failure goes to the debug panel. A getter that answers None falls back
+    the same way.
+
+    CHIRP's settings objects are untyped and expose these bounds either as a
+    getter or as a bare attribute depending on the value class, so what comes
+    back is genuinely unknown until the caller's int() or float().
+    """
+    getter = getattr(value, getter_name, None)
+    bound: Any = None
+    if callable(getter):
+        try:
+            bound = getter()
+        except Exception:
+            _log_debug(
+                "Setting %s: the driver's %s() raised, showing the declared bound %r instead:\n%s"
+                % (
+                    setting_name or "<unnamed>",
+                    getter_name,
+                    getattr(value, attr_name, None),
+                    traceback.format_exc(),
+                )
+            )
+    if bound is None:
+        bound = getattr(value, attr_name, None)
+    return bound
+
+
 def _serialize_setting_value(
-    value: chirp_settings.RadioSettingValue, rejected: Optional[RejectedValues] = None
+    value: chirp_settings.RadioSettingValue,
+    rejected: Optional[RejectedValues] = None,
+    *,
+    setting_name: str = "",
 ) -> dict[str, Any]:
     """Convert a CHIRP RadioSettingValue into UI-friendly JSON metadata.
 
     rejected maps a value object to what the user submitted for it when CHIRP
     refused it; that submission is reported as the current value, so the panel
     shows the user's value marked invalid rather than the old one.
+    setting_name only labels a bound the driver failed to compute in the debug
+    panel.
     """
     current = value.get_value() if value.initialized else None
     if rejected and id(value) in rejected:
@@ -117,15 +165,12 @@ def _serialize_setting_value(
         "current": current,
     }
 
-    def _serialize_numeric_bound(getter_name: str, attr_name: str) -> Optional[float]:
-        getter = getattr(value, getter_name, None)
-        # CHIRP's settings objects are untyped and expose these bounds either as
-        # a getter or as a bare attribute depending on the value class, so what
-        # comes back is genuinely unknown until the float() call.
-        bound: Any = getter() if callable(getter) else None
-        if bound is None:
-            bound = getattr(value, attr_name, None)
-        return float(bound) if bound is not None else None
+    def _put_bound(
+        key: str, getter_name: str, attr_name: str, convert: Callable[[Any], float | int]
+    ) -> None:
+        bound = _setting_value_bound(value, getter_name, attr_name, setting_name)
+        if bound is not None:
+            data[key] = convert(bound)
 
     if isinstance(value, chirp_settings.RadioSettingValueBoolean):
         data["type"] = "boolean"
@@ -138,17 +183,13 @@ def _serialize_setting_value(
         data["options"] = [str(option) for option in value.get_options()]
     elif isinstance(value, chirp_settings.RadioSettingValueInteger):
         data["type"] = "integer"
-        data["min"] = int(value.get_min())
-        data["max"] = int(value.get_max())
-        data["step"] = int(value.get_step())
+        _put_bound("min", "get_min", "_min", int)
+        _put_bound("max", "get_max", "_max", int)
+        _put_bound("step", "get_step", "_step", int)
     elif isinstance(value, chirp_settings.RadioSettingValueFloat):
         data["type"] = "float"
-        minimum = _serialize_numeric_bound("get_min", "_min")
-        maximum = _serialize_numeric_bound("get_max", "_max")
-        if minimum is not None:
-            data["min"] = minimum
-        if maximum is not None:
-            data["max"] = maximum
+        _put_bound("min", "get_min", "_min", float)
+        _put_bound("max", "get_max", "_max", float)
     elif isinstance(value, chirp_settings.RadioSettingValueString):
         data["type"] = "string"
         data["minLength"] = int(value.minlength)
@@ -171,7 +212,9 @@ def _serialize_setting_node(
         raw_values = node.value if isinstance(node.value, list) else [node.value]
         values = []
         for value_index, value in enumerate(raw_values):
-            serialized = _serialize_setting_value(value, rejected)
+            serialized = _serialize_setting_value(
+                value, rejected, setting_name=str(node.get_name())
+            )
             serialized["index"] = int(value_index)
             values.append(serialized)
 
