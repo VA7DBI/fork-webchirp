@@ -88,7 +88,7 @@ const IGNORE_ERRORS = Object.freeze([
 ]);
 
 // The CHIRP errors that describe the user's file, the user's radio or the
-// user's cable, by class name within chirp.errors.
+// user's cable, by class name within the module that defines them.
 //
 // The rule names its classes rather than taking the module whole, because the
 // module is not a severity boundary. Upstream CHIRP is a desktop app where
@@ -103,16 +103,31 @@ const IGNORE_ERRORS = Object.freeze([
 // RadioError the drivers raise as a catch-all, which is where a short read from
 // the Web Serial stand-in (web/python/webchirp_bridge/serial_pipe.py) would
 // surface -- the one failure class upstream CHIRP has never had to see.
-export const IGNORED_CHIRP_ERRORS = Object.freeze([
-  "InvalidDataError",
-  "InvalidValueError",
-  "UnsupportedToneError",
-  "ImageDetectFailed",
-  "ImageMetadataInvalidModel",
-  "RadioNoResponse",
-  "RadioNoContactLikelyK1",
-  "RadioFixedBanks",
-]);
+//
+// chirp.settings is here because CHIRP defines InvalidValueError twice.
+// chirp/chirp/settings.py has its own, unrelated to the chirp.errors one:
+// RadioSettingValue.set_value raises it for a setting value the radio will not
+// take, and 18 drivers import it instead of the chirp.errors class and raise it
+// from their own range checks -- kguv9dplus refusing a VFO frequency outside
+// the radio's bands (WEBCHIRP-FRONTEND-2D, -2E) is a value the driver was
+// handed and will not take, which is what the chirp.errors class means too.
+// No other listed name is defined twice in chirp/. The one raise of it that is
+// not about a value, RadioSettingValueMap rejecting a driver's malformed map,
+// happens whenever the driver builds its settings, which upstream's
+// test_settings does for every driver image before a release.
+export const IGNORED_CHIRP_ERRORS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "chirp.errors": Object.freeze([
+    "InvalidDataError",
+    "InvalidValueError",
+    "UnsupportedToneError",
+    "ImageDetectFailed",
+    "ImageMetadataInvalidModel",
+    "RadioNoResponse",
+    "RadioNoContactLikelyK1",
+    "RadioFixedBanks",
+  ]),
+  "chirp.settings": Object.freeze(["InvalidValueError"]),
+});
 
 // What fetch() rejects with when the request never got a response -- the tab
 // went offline, a CDN was blocked, a proxy dropped the connection -- in
@@ -169,7 +184,9 @@ function webAssemblyMissing(): boolean {
 // RuntimeUnsupportedError and ImageDetectionError subclass errors.RadioError,
 // so a hierarchy match on the listed classes' shared base would swallow them,
 // while an exact match leaves them -- defined in
-// webchirp_bridge.runtime_errors -- reported as before.
+// webchirp_bridge.runtime_errors -- reported as before. A class is dropped
+// only under a module the list names for it: chirp.settings is named for
+// InvalidValueError alone, so the same name from any other module is kept.
 //
 // The rule is applied to the failure and to the exception it was raised from,
 // because a wrapper describes the same circumstance as what it wraps.
@@ -210,9 +227,11 @@ export function isIgnoredError(error: unknown): boolean {
 
 // Whether a Python class, named by class and defining module, is one of the
 // IGNORED_CHIRP_ERRORS. Split out because isIgnoredError asks it twice: of the
-// failure, and of the exception the failure was raised from.
+// failure, and of the exception the failure was raised from. Object.hasOwn,
+// because the module name is the Python side's text and "constructor" must not
+// find Object's.
 function isIgnoredChirpClass(type: string, module: string): boolean {
-  return module === "chirp.errors" && IGNORED_CHIRP_ERRORS.includes(type);
+  return Object.hasOwn(IGNORED_CHIRP_ERRORS, module) && IGNORED_CHIRP_ERRORS[module].includes(type);
 }
 
 // Script origins that are never this app: browser extensions, and the script
