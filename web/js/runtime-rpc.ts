@@ -282,6 +282,8 @@ export interface SessionDescription {
   hasBackingImage: boolean;
   imageSize: number;
   unreadableChannels: number[];
+  /** Channels the image held that the driver will not erase. */
+  undeletableChannels: number[];
 }
 
 /** read_image_metadata_base64: the identity an image's trailer records. */

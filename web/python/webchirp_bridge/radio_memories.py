@@ -122,18 +122,28 @@ def _erase_memory(radio: chirp_common.Radio, number: int) -> None:
         radio.erase_memory_extra(number)
 
 
-def _radio_rows_from_instance(radio: chirp_common.Radio) -> tuple[Rows, list[int]]:
+def _radio_rows_from_instance(
+    radio: chirp_common.Radio,
+) -> tuple[Rows, list[int], list[int]]:
     """Extract channel rows from a radio instance using CHIRP memory API.
 
-    Returns the decoded rows and the numbers the driver refused to decode. A
-    memory that raises is skipped rather than failing the whole download, but
-    it must not vanish without trace: the traceback goes to the debug panel and
-    the number is handed back so callers can mark the slot. Those same numbers
-    are the ones `_apply_rows_to_radio_instance` must never erase, since their
-    absence from the grid reflects a decode failure, not a user deletion.
+    Returns the decoded rows, the numbers the driver refused to decode and the
+    numbers of decoded channels it will not erase. A memory that raises is
+    skipped rather than failing the whole download, but it must not vanish
+    without trace: the traceback goes to the debug panel and the number is
+    handed back so callers can mark the slot. Those same numbers are the ones
+    `_apply_rows_to_radio_instance` must never erase, since their absence from
+    the grid reflects a decode failure, not a user deletion.
+
+    A channel whose memory lists ``empty`` in ``immutable`` always exists on
+    the radio (fixed GMRS/FRS/MURS or call channels): desktop CHIRP refuses to
+    delete it, and an upload that omits it keeps it. Its number is handed back
+    so the grid can refuse the delete up front rather than let it silently not
+    happen. An empty slot is not listed, since there is no row to delete.
     """
     rows: Rows = []
     unreadable: list[int] = []
+    undeletable: list[int] = []
     numbers_by_reason: dict[str, list[int]] = {}
     trace_by_reason: dict[str, str] = {}
     for number in _iter_memory_numbers(radio):
@@ -149,6 +159,8 @@ def _radio_rows_from_instance(radio: chirp_common.Radio) -> tuple[Rows, list[int
             continue
         if getattr(mem, "empty", False):
             continue
+        if "empty" in mem.immutable:
+            undeletable.append(number)
         row = _row_from_memory(mem)
         extras = _row_extras_from_memory(mem)
         if extras:
@@ -160,7 +172,7 @@ def _radio_rows_from_instance(radio: chirp_common.Radio) -> tuple[Rows, list[int
         "could not be decoded by the driver and are missing from the channel list",
         trace_by_reason,
     )
-    return rows, unreadable
+    return rows, unreadable, undeletable
 
 
 def _read_radio_payload(
@@ -171,7 +183,8 @@ def _read_radio_payload(
     The serial download and the image load differ only in how they obtained the
     radio -- ``origin`` says which; from here on both record its image on the
     session, extract the rows, record the slots that would not decode so a
-    later upload leaves them alone, and serialize the radio-wide settings
+    later upload leaves them alone and the channels the driver will not erase
+    so the grid refuses to delete them, and serialize the radio-wide settings
     read-only.
 
     A driver whose ``get_settings()`` raises must not cost the user the
@@ -179,8 +192,9 @@ def _read_radio_payload(
     none, which the UI reads as "no Settings tab".
     """
     session.record_radio(radio, origin)
-    rows, unreadable = _radio_rows_from_instance(radio)
+    rows, unreadable, undeletable = _radio_rows_from_instance(radio)
     session.record_unreadable_channels(unreadable)
+    session.record_undeletable_channels(undeletable)
     settings_result = _validate_and_apply_radio_settings(radio, [], apply_changes=False)
     return {
         "rows": rows,

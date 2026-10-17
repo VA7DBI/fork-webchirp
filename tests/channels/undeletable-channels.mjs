@@ -26,7 +26,7 @@ _session = open_radio_session(_module, _class_name)
 _session.record_image(base64.b64decode(_image_b64), _cls, ImageOrigin.FILE)
 
 _source = _session.radio_instance()
-_rows, _ = _radio_rows_from_instance(_source)
+_rows, _, _ = _radio_rows_from_instance(_source)
 _undeletable = []
 _deletable = []
 for _row in _rows:
@@ -117,5 +117,82 @@ test("an upload that omits a channel the driver will not erase keeps it", async 
       result.clearedError,
       new RegExp(`^RuntimeUnsupportedError: Channel ${result.undeletable[0]}: Field empty is not mutable`),
     );
+  });
+});
+
+// The grid refuses to delete those channels up front, as desktop CHIRP does,
+// rather than let the upload keep them without a word. It learns which ones
+// from the Location column's metadata, filled from the image's rows when it is
+// read; a cleared Frequency on one is refused by the per-edit check.
+const METADATA_PROBE = `
+import base64, json
+
+ensure_radio_module(_module)
+_cls = _import_radio_class(_module, _class_name)
+_blank = open_radio_session(_module, _class_name)
+_blank_location = get_radio_column_metadata(_blank.session_id)["columns"]["Location"]
+close_session(_blank.session_id)
+
+_session = open_radio_session(_module, _class_name)
+_session.record_image(base64.b64decode(_image_b64), _cls, ImageOrigin.FILE)
+_payload = _read_radio_payload(_session, _session.radio_instance(), ImageOrigin.FILE)
+_location = get_radio_column_metadata(_session.session_id)["columns"]["Location"]
+_rows = {int(_r["Location"]): _r for _r in _payload["rows"]}
+_ordinary = min(_n for _n in _rows if _n not in _location.get("undeletable", []))
+
+def _clear_frequency(_number):
+    return normalize_and_validate_rows(_session.session_id, [
+        {"row": _rows[_number], "edits": [{"column": "Frequency", "value": ""}]},
+    ])["rows"][0]
+
+_result = {
+    "blankLocation": _blank_location,
+    "location": _location,
+    "described": _session.describe()["undeletableChannels"],
+    "fixedFrequency": _rows[1]["Frequency"],
+    "clearedFixed": _clear_frequency(1),
+    "ordinary": _ordinary,
+    "clearedOrdinary": _clear_frequency(_ordinary),
+}
+close_session(_session.session_id)
+json.dumps(_result)
+`;
+
+test("the GM-15Pro's fixed channels 1-54 reach the grid as undeletable", async (t) => {
+  const harness = await sharedHarness();
+  const raw = await readImage(FIXTURE_IMAGE);
+  const result = await harness.runPythonJson(METADATA_PROBE, {
+    _image_b64: raw.toString("base64"),
+    _module: MODULE,
+    _class_name: CLASS_NAME,
+  });
+  const fixedChannels = Array.from({ length: 54 }, (_, index) => index + 1);
+
+  await t.test("the Location column lists them once the image is read", () => {
+    assert.deepEqual(result.location.undeletable, fixedChannels);
+    assert.deepEqual(result.described, fixedChannels);
+    assert.ok(result.ordinary > 54, "the fixture should hold an ordinary channel too");
+  });
+
+  // A fact about the codeplug read, not the driver: with no image there are
+  // no channels yet, so nothing to refuse.
+  await t.test("a session with no image lists none", () => {
+    assert.equal("undeletable" in result.blankLocation, false);
+  });
+
+  await t.test("clearing a fixed channel's Frequency keeps it, with a note", () => {
+    assert.deepEqual(result.clearedFixed.cells, [{
+      column: "Frequency",
+      value: result.fixedFrequency,
+      accepted: false,
+      note: "Channel 1 cannot be deleted on this radio; kept the previous value",
+    }]);
+    assert.deepEqual(result.clearedFixed.issues, []);
+  });
+
+  await t.test("clearing an ordinary channel's Frequency still erases it", () => {
+    assert.deepEqual(result.clearedOrdinary.cells, [
+      { column: "Frequency", value: "", accepted: true, note: "" },
+    ]);
   });
 });
