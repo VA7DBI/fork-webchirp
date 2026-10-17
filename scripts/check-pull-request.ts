@@ -71,7 +71,9 @@ export function checkPullRequest(baseSha: string, headSha: string, body: string)
   return [
     ...releaseNotesFindings(changed),
     ...sessionLinkFindings(commits),
-    ...dependencyFindings(packageJsonAt(baseSha), packageJsonAt(headSha), body),
+    // Against the merge base, like the file diff above: master may have
+    // added or dropped dependencies since the branch left it.
+    ...dependencyFindings(packageJsonAt(git("merge-base", baseSha, headSha).trim()), packageJsonAt(headSha), body),
   ];
 }
 

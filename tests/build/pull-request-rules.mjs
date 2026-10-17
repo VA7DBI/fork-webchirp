@@ -75,3 +75,35 @@ test("the range check reads files, commits and package.json from git", async () 
     }
   });
 });
+
+test("dependencies are compared with the merge base, not master's tip", async () => {
+  await withTempDir("pr-rules-", async (dir) => {
+    const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "master");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "T");
+    git("config", "commit.gpgsign", "false");
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ dependencies: { zod: "1" } }));
+    git("add", ".");
+    git("commit", "-qm", "base");
+    git("checkout", "-qb", "feature");
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ dependencies: { zod: "1", fflate: "1" } }));
+    git("commit", "-qam", "Add fflate");
+    const head = git("rev-parse", "HEAD");
+    // Master drops zod and adds fflate on its own after the branch left it.
+    git("checkout", "-q", "master");
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ dependencies: { fflate: "1" } }));
+    git("commit", "-qam", "Swap zod for fflate");
+    const base = git("rev-parse", "HEAD");
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      // zod is not new on the branch; fflate is, even though master has it too.
+      assert.deepEqual(checkPullRequest(base, head, ""), [
+        "the description does not mention the new dependency fflate; list it there",
+      ]);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+});
