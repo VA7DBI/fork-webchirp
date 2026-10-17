@@ -40,8 +40,7 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   in `channel-table`). A committed cell shows the typed value marked
   `is-pending` until the answer arrives, and an answer is applied only while
   the row is at the version it was sent at and its session is still
-  `state.radioSession`. `channel-values` holds only the row and
-  column-metadata types. `repeater-query` is one modal shell for every
+  `state.radioSession`. `repeater-query` is one modal shell for every
   repeater directory: its form is assembled per source from the field
   components in `query-fields.ts` (which build their own DOM), driven by the
   `RepeaterDirectoryAdapter`s registered in `createRepeaterAdapters`
@@ -96,47 +95,30 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   to `OFFLINE_DATA_FILES` (`scripts/build-dist.ts`): anything missing from
   that section breaks only offline, which no online page load reveals.
 - `chirp/`: Upstream CHIRP source as a git submodule. The runtime never reads it
-  file by file: `scripts/build-chirp-bundle.ts` (`npm run build:chirp`, run by `dev`
-  and `build:dist`) zips the pinned `chirp/chirp` package -- minus `wxui`, `cli`,
-  `sources`, `locale`, `share` and `stock_configs`, which nothing imports -- into the
-  ignored `web/chirp/chirp-<pin>.zip` with a `chirp-<pin>.json` manifest (pin, driver
-  module list, sizes). `seedPyodideRuntime()` (`web/js/python-sources.ts`) mounts it
-  with `pyodide.unpackArchive` under `/webchirp_runtime`, so every `chirp.*` import is
-  a plain file import that never suspends the interpreter; the driver list everywhere
-  comes from the manifest. The Node harness (`tests/support/chirp-bundle-source.mjs`)
-  builds the same archive in-process from the submodule.
+  file by file: `npm run build:chirp` (`scripts/build-chirp-bundle.ts`, run by `dev`
+  and `build:dist`) zips the pinned package into the ignored
+  `web/chirp/chirp-<pin>.zip` with a `chirp-<pin>.json` manifest, which
+  `seedPyodideRuntime()` (`web/js/python-sources.ts`) mounts; the driver list
+  everywhere comes from the manifest. The Node harness
+  (`tests/support/chirp-bundle-source.mjs`) builds the same archive in-process.
 - `tests/`: The node:test suite, one directory per suite — `channels` and
-  `settings` boot Pyodide (the clone tests use JSPI, which Node 25 has on by
-  default: no flag), `webusb` and `build` do not. `manual` holds the two tests npm test never
+  `settings` boot Pyodide, `webusb` and `build` do not. `manual` holds the two tests npm test never
   runs (`rsgb-live` needs the network, `hw-radio` needs a radio on a serial
   port). `support` holds shared fixtures and the two harnesses, not tests.
 - `scripts/`: Build, coverage and CLI tooling only. No tests live here.
-- `scripts/build-dist.ts` (`npm run build:dist`) builds the Pages tree. The
-  entry points are the module scripts and stylesheets the HTML pages load, and
-  esbuild bundles them: ESM with code splitting, unminified, linked source maps,
-  and every JS output in `dist/js/` named `name.<hash>.js`. Pages are pointed at
-  their outputs through esbuild's metafile. Runtime Python files are copied as
-  `name.<sha256:10>.py`, and the bundle gets their URLs from a generated
-  replacement for `web/js/runtime-python-urls.ts`. The CHIRP archive pair and
-  every other file are copied as they are. The jsDelivr modules (Pyodide,
-  Sentry, web-serial-polyfill) stay external. `scripts/retain-deployed-assets.ts`
-  knows both hashed name shapes.
-- The browser code and the tooling are TypeScript (`web/app.ts`,
-  `web/js/**/*.ts`, `scripts/*.ts`); `tests/` stays `.mjs` and imports the `.ts`
-  modules. Nothing compiles them: Node runs them by stripping the types, the
-  dev server (`scripts/dev-server.ts`, `npm run dev`) answers a request for a
-  `.ts` file with that file type-stripped by esbuild's transform API
-  (`text/javascript`, inline source map) and serves everything else static,
-  and `scripts/build-dist.ts` bundles them with esbuild. Pages load their `.ts`
-  entries by name (`<script type="module" src="./app.ts">`); no `.js` request
-  is mapped onto a `.ts` file.
-- `tsconfig.json` (browser code, lib.dom, no Node types) and
-  `scripts/tsconfig.json` (tooling, with `@types/node`, plus `allowJs` for the
-  `tests/support` modules the scripts import) are the two projects
-  `npm run check:js` runs, both with `strict` on: every parameter is typed, a
-  null-initialised variable carries its `T|null` type, and a value that can be
-  null is checked before use rather than cast. A caught value is `unknown`;
-  read its fields through `errorFields()` (`web/js/error-details.ts`).
+- `scripts/build-dist.ts` (`npm run build:dist`) builds the Pages tree with
+  esbuild (its header comment describes the output). A change to how outputs
+  are named also changes `scripts/retain-deployed-assets.ts`, which knows both
+  hashed name shapes.
+- The browser code and the tooling are TypeScript; `tests/` stays `.mjs` and
+  imports the `.ts` modules. Nothing compiles them: Node strips the types, the
+  dev server strips each `.ts` request with esbuild, and `scripts/build-dist.ts`
+  bundles them. Pages load their `.ts` entries by name.
+- `tsconfig.json` (browser code, no Node types) and `scripts/tsconfig.json`
+  (tooling, with `@types/node`) are the two projects `npm run check:js` runs,
+  both `strict`. A value that can be null is checked before use rather than
+  cast; read a caught value's fields through `errorFields()`
+  (`web/js/error-details.ts`).
   `web/js/types/browser-globals.d.ts` declares the
   browser APIs lib.dom lacks (Web Serial, WebUSB, Web Bluetooth, JSPI, gtag);
   `web/js/types/ui-context.d.ts` names every member of the UI `ctx`.
@@ -146,10 +128,7 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   Chromium only, against `dist/` built by `npm run build:dist` and served by
   `scripts/dev-server.ts` in its Pages mode (`WEB_ROOT=dist SERVE_AS=pages`).
   Run it with `npm run test:e2e` after a one-time
-  `npx playwright install chromium`. `npm test` and coverage leave it out on
-  purpose (`NON_SUITE_DIRS` in `scripts/coverage.ts`): it needs the browser
-  and the network, because Pyodide comes from jsDelivr. CI runs it in its own
-  workflow (`.github/workflows/e2e.yml`). Drive the app with the page-side
+  `npx playwright install chromium`; `npm test` leaves it out. Drive the app with the page-side
   steps in `scripts/app-driver.ts`, which `scripts/update-screenshots.ts` uses
   too, and route any third-party API to a fixture with `page.route()`.
 - Shared fakes belong in `tests/support/`; import from there before writing
@@ -188,21 +167,14 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - Prefer generic, parameterized flows based on selected CHIRP driver/module/class.
 - Do not reintroduce radio-specific RPC methods when generic selected-radio methods can be used.
 - Preserve debug visibility: full errors/tracebacks should be logged to the bottom debug panel.
-- Nothing in the dist build reads comments: esbuild resolves the imports and
-  the page rewrite touches only the `src`/`href` of the tags that load a module
-  or stylesheet. So the old rule about spelling module paths in comments (and
-  its test) is retired.
 - Avoid context pollution by spawning sub-agents when appropriate.
   - Use sub-agent sandboxing when a read-only task is to be executed.
   - Use sub-agents to produce a summary for a commit message.
-- Whether a radio's firmware can be updated is not in the catalog and cannot be:
-  no CHIRP driver knows it. `radio-firmware.json` (repo root) records it by hand,
-  keyed by vendor with `vendor|model` overrides, and `scripts/build-model-pages.ts`
-  turns it into a section on each model page. Never state a claim more strongly than
-  its evidence: a vendor-level answer points at that vendor's download page, and only
-  a model-level entry promises a download for that model. Record `unknown` rather than
-  guessing; an unknown radio gets no section. Adding a vendor to the catalog without
-  an answer fails `tests/build/radio-firmware.mjs`.
+- `radio-firmware.json` (repo root) records by hand whether a radio's firmware
+  can be updated (no CHIRP driver knows it), keyed by vendor with `vendor|model`
+  overrides. Never state a claim more strongly than its evidence: a vendor-level
+  answer points at that vendor's download page, and only a model-level entry
+  promises a download for that model. Record `unknown` rather than guessing.
 - When you discover something new, or unexpected, put it in FINDINGS.md and
   nowhere else. CLAUDE.md holds instructions only: no findings, triage notes
   or explanations of why something happened.
@@ -241,33 +213,14 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 ## Other considerations
 - This is currently hosted on GitHub Pages = we can't set custom http headers on files, and can't control cache time.
 - `web/.well-known/assetlinks.json` is the Digital Asset Links statement for the
-  Android app (a Trusted Web Activity over the site). The build requires it and
-  `tests/build/asset-links.mjs` checks it. Its `package_name` must equal the
-  Android app's application id, `com.hf2j.webchirp`, and its fingerprints must
-  include the Play App Signing key's SHA-256, not only the upload key's.
-- The Android app marks every URL it opens, and that mark is the only way a
-  page knows it runs inside the app: the `startUrl` in
-  `android/twa-manifest.json` carries `ANDROID_APP_LAUNCH_PARAMS`
-  (`/?utm_source=android_app&utm_medium=twa`), and Bubblewrap's `firstRunFlag`
-  feature adds `ANDROID_APP_LAUNCH_FLAG` (`android_app_first_open`) to every URL,
-  links opened in the app included (both in `web/js/android-app.ts`).
-  `runsInAndroidApp()` reads them and keeps the answer for the tab's session.
-  Code that must behave differently in the app asks that, never the user agent
-  or `document.referrer`.
-- `android/` is the Android app's Gradle project, generated by Bubblewrap
-  1.27.0 from `android/twa-manifest.json`. Change the app by editing that file
-  and running `bubblewrap update --skipVersionUpgrade` in `android/` (plain
-  `bubblewrap update` for a release, which bumps the version), then commit the
-  manifest, `manifest-checksum.txt` and the regenerated files together. Never
-  edit generated files by hand: the next update overwrites them. A changed web
-  icon means regenerating too, then recording its SHA-256 in
-  `android/icon-sources.json`. `tests/build/android-app.mjs` holds the project
-  to the site (host, package, launch query and flag, name, colours, icons and
-  their digests, Custom Tabs fallback, a live service for location delegation,
-  Play's minimum target SDK) and to its manifest;
-  `.github/workflows/android.yml` builds it.
-  `android/README.md` is the release procedure. Signing keys never enter the
-  repository.
+  Android app. Its fingerprints must include the Play App Signing key's
+  SHA-256, not only the upload key's.
+- Code that must behave differently inside the Android app asks
+  `runsInAndroidApp()` (`web/js/android-app.ts`), never the user agent or
+  `document.referrer`.
+- `android/` is generated by Bubblewrap from `android/twa-manifest.json`; never
+  edit the generated files by hand. `android/README.md` is the procedure for
+  changing and releasing the app. Signing keys never enter the repository.
 - We do not aim to support screen readers at this time.
 
 ## Change Process
@@ -278,7 +231,7 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - Include clear commit messages that describe user-visible behavior or architectural impact.
 - If model is other than Anthropic/OpenAI, add a Co-Authored-By: <model name and parameters> at the end of the commit message
 - Never use backticks (`) anywhere in any generated command to execute.
-- When on master, update RELEASE_NOTES.md based on PRs which were merged in with current date. Each entry is a single line: the user-visible change plus the PR number, no multi-sentence detail. At the same time run `npm run screenshots` to regenerate images/screenshot.png, images/screenshot-for-opengraph.png, and web/images/social-preview.png from the current version of the app. When generating a screenshot, query the RSGB API channels for locator IO82MM. When you do this, also consolidate/update FINDINGS.md so that it is always up to date.
+- When on master, update RELEASE_NOTES.md based on PRs which were merged in with current date. Each entry is a single line: the user-visible change plus the PR number, no multi-sentence detail. At the same time run `npm run screenshots` to regenerate images/screenshot.png, images/screenshot-for-opengraph.png, and web/images/social-preview.png from the current version of the app. When you do this, also consolidate/update FINDINGS.md so that it is always up to date.
 
 ## Code Review
 - If you are an OpenAI agent, use Astra Medium when performing code review.
@@ -286,14 +239,8 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - Always post a response to each comment when you receive feedback.
 
 ## Validation
-Before committing, run syntax checks, typechecking and all tests.
-`npm test` covers syntax (`check:syntax`, `node --check` over the `.mjs`
-tests; tsc parses the `.ts` sources), Python types (`check:types`, pyright),
-TypeScript types (`check:js`, tsc with `strict` over both projects) and the four
-automatic suites.
+Before committing, run `npm test` (syntax, pyright, tsc and the four suites).
 Code conventions are enforced by tests rather than listed here:
 `tests/build/source-conventions.mjs` (TypeScript), `tests/build/python-conventions.mjs`
 (runtime Python) and, on a pull request, `scripts/check-pull-request.ts`. Each
 failure names the file and line and says what to do.
-
-
