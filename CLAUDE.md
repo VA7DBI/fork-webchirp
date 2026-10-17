@@ -166,6 +166,27 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `tests/support/bridge_namespace.py`; production code never does.
 - Prefer generic, parameterized flows based on selected CHIRP driver/module/class.
 - Do not reintroduce radio-specific RPC methods when generic selected-radio methods can be used.
+- Generic code never names a radio. Before treating a driver as a special
+  case, ask whose rule it breaks: a driver using something CHIRP's own API
+  allows (`"empty"` in `Memory.immutable`, `ExternalMemoryProperties`) is
+  handled once in generic code, for every driver that does it. Only a driver
+  that breaks CHIRP's own contract -- an upstream defect -- gets a workaround:
+  - It lives in `web/python/webchirp_bridge/workarounds/`, one submodule per
+    CHIRP driver module, named after it (`workarounds/uv5r.py`), naming the
+    affected classes inside. Each submodule is listed in
+    `RUNTIME_PYTHON_FILES` like any runtime module.
+  - Generic code calls it only through a hook that `workarounds/__init__.py`
+    defines and dispatches. A hook matches the radio's class MRO by module and
+    class name, so a subclass inherits its parent's workaround and checking
+    imports no driver. A new kind of workaround adds a hook there, never an
+    `if` on a module, class, vendor or model at the call site.
+  - Each one cites its FINDINGS.md entry (slug and CHIRP pin), and has a test
+    in `tests/channels/` that runs the unpatched driver and fails once
+    upstream fixes it, so a pin bump removes the workaround. Fix it upstream
+    too where practical and link the CHIRP PR.
+  - Shims for what Pyodide lacks (`serial_pipe`, the pre-import shims in
+    `webchirp_bridge/__init__.py`) are not workarounds and stay where they
+    are.
 - Preserve debug visibility: full errors/tracebacks should be logged to the bottom debug panel.
 - Avoid context pollution by spawning sub-agents when appropriate.
   - Use sub-agent sandboxing when a read-only task is to be executed.
