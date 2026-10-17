@@ -14,8 +14,8 @@ import { withCapturedDebugLog } from "../support/debug-log-capture.mjs";
 // zeroed map -- it raises on int(None), which failed a from-scratch FT5D
 // binary export (Sentry WEBCHIRP-FRONTEND-2G). The fix is a workaround per
 // driver module (web/python/webchirp_bridge/workarounds/ft1d.py and vx8.py,
-// FINDINGS ft1d-smartbeacon-low-speed-bound); the last test shows the drivers
-// still need it.
+// FINDINGS ft1d-smartbeacon-low-speed-bound); the last two tests per driver
+// show the drivers still need it.
 
 // Each upstream fixture's profiles hold high speeds of 70, 30 and 12 mph, so a
 // low speed bounded by its own profile has maxima 30, 29 and 11, and one bound
@@ -81,7 +81,35 @@ async function blankSession(harness, fixture) {
   return opened.sessionId;
 }
 
+// Each profile's low-speed bound as the driver's own get_settings builds it,
+// bypassing the workaround hook: the number get_max() answers, or the
+// TypeError it raised, as "TypeError: <message>".
+async function driverLowSpeedMaxima(harness, sessionId, prefix) {
+  return harness.runPythonJson(
+    `
+_tree = resolve_session(_session_id).radio_instance().get_settings()
+_by_name = {str(_s.get_name()): _s for _group in _tree for _s in _group.walk()}
+_maxima = []
+for _profile in range(3):
+    _low = _by_name["%s.smartbeaconing_profile[%d].low_speed_mph" % (_prefix, _profile)]
+    try:
+        _maxima.append(_low.value.get_max())
+    except TypeError as _exc:
+        _maxima.append("TypeError: " + str(_exc))
+json.dumps(_maxima)
+`,
+    { _session_id: sessionId, _prefix: prefix },
+  );
+}
+
 const FALLBACK_LINE = /raised, showing the declared bound/;
+
+// DRIVER_TESTS: the two "without its workaround" tests per driver each pin one
+// upstream bug, so a pin bump names which one CHIRP fixed. The workaround
+// repairs both: delete it (the driver's module under workarounds/, its entry
+// in the get_settings hook, this file and the FINDINGS entry) only once both
+// fail for that driver module. If only one fails, delete that test and keep
+// the workaround -- it still covers the other bug.
 
 for (const fixture of FIXTURES) {
   test(`${fixture.className}: each low speed is bounded by its own profile's high speed`, async () => {
@@ -110,39 +138,27 @@ for (const fixture of FIXTURES) {
     }
   });
 
-  test(`${fixture.className}: without its workaround, the driver still late-binds and raises`, async () => {
-    // When this fails, the pinned CHIRP binds each profile's low-speed bound to
-    // its own high speed, or no longer raises for one that never initialized:
-    // delete the driver's module under workarounds/, its entry in the
-    // get_settings hook, this file and its FINDINGS entry.
+  test(`${fixture.className}: without its workaround, the driver still bounds every profile by the last high speed`, async () => {
+    // When this fails, the pinned CHIRP binds each profile's bound to its own
+    // high speed. See DRIVER_TESTS above before deleting anything.
     const harness = await sharedHarness();
     const loaded = await loadFixture(harness, fixture);
+    assert.deepEqual(
+      await driverLowSpeedMaxima(harness, loaded.sessionId, fixture.prefix),
+      LAST_PROFILE_MAXIMA,
+    );
+  });
+
+  test(`${fixture.className}: without its workaround, the driver still raises on a high speed that never initialized`, async () => {
+    // When this fails, the pinned CHIRP answers for a high speed that never
+    // initialized. See DRIVER_TESTS above before deleting anything.
+    const harness = await sharedHarness();
     const sessionId = await blankSession(harness, fixture);
     try {
-      const driver = await harness.runPythonJson(
-        `
-def _driver_low_speed_maxima(_session_id):
-    # The driver's own get_settings, not the hook.
-    _tree = resolve_session(_session_id).radio_instance().get_settings()
-    _by_name = {str(_s.get_name()): _s for _group in _tree for _s in _group.walk()}
-    _maxima = []
-    for _profile in range(3):
-        _low = _by_name["%s.smartbeaconing_profile[%d].low_speed_mph" % (_prefix, _profile)]
-        try:
-            _maxima.append(_low.value.get_max())
-        except TypeError as _exc:
-            _maxima.append("TypeError: " + str(_exc))
-    return _maxima
-
-json.dumps({
-    "image": _driver_low_speed_maxima(_image_session),
-    "blank": _driver_low_speed_maxima(_blank_session),
-})
-`,
-        { _prefix: fixture.prefix, _image_session: loaded.sessionId, _blank_session: sessionId },
-      );
-      assert.deepEqual(driver.image, LAST_PROFILE_MAXIMA, "every profile reads the last high speed");
-      for (const maximum of driver.blank) {
+      // A zeroed map holds 0 in every high speed, below the driver's minimum
+      // of 3, so no profile's high speed initializes -- whichever one a bound
+      // reads.
+      for (const maximum of await driverLowSpeedMaxima(harness, sessionId, fixture.prefix)) {
         assert.match(String(maximum), /^TypeError: int\(\) argument must be/);
       }
     } finally {
