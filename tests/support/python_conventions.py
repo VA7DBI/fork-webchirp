@@ -183,18 +183,38 @@ def _known_module(name: str, modules: set[str]) -> str:
     return parts[0]
 
 
-def _package_imports(tree: ast.Module, guarded: set[int], modules: set[str]) -> set[str]:
-    """Bridge modules this module imports at runtime (TYPE_CHECKING excluded)."""
+def _import_from_base(node: ast.ImportFrom, package: tuple[str, ...]) -> str | None:
+    """The dotted name, inside the bridge package, that a ``from X import``
+    reads from, or None when X lies outside it. A relative import counts from
+    the importing module's own package, one level up per dot past the first."""
+    module = node.module or ""
+    if node.level:
+        if node.level - 1 > len(package):
+            return None
+        parts = list(package[: len(package) - (node.level - 1)])
+        if module:
+            parts.append(module)
+        return ".".join(parts)
+    if module == PACKAGE or module.startswith(PACKAGE + "."):
+        return module[len(PACKAGE) + 1:]
+    return None
+
+
+def _package_imports(
+    tree: ast.Module, guarded: set[int], modules: set[str], package: tuple[str, ...]
+) -> set[str]:
+    """Bridge modules this module imports at runtime (TYPE_CHECKING excluded).
+
+    ``package`` is the importing module's package inside the bridge, as
+    path parts: () at the top, ("workarounds",) for workarounds/uv5r.py and
+    workarounds/__init__.py alike."""
     deps: set[str] = set()
     for node in ast.walk(tree):
         if id(node) in guarded:
             continue
         if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if node.level == 1:
-                deps.update([module.split(".")[0]] if module else [a.name for a in node.names])
-            elif module == PACKAGE or module.startswith(PACKAGE + "."):
-                base = module[len(PACKAGE) + 1:]
+            base = _import_from_base(node, package)
+            if base is not None:
                 for alias in node.names:
                     deps.add(_known_module(f"{base}.{alias.name}".lstrip("."), modules))
         elif isinstance(node, ast.Import):
@@ -255,7 +275,7 @@ def run(python_dir: Path) -> dict[str, list[str]]:
         report["function_comments"] += check_function_comments(name, tree, source.split("\n"))
         if path.is_relative_to(package_dir):
             graph[_module_name(package_dir, path)] = _package_imports(
-                tree, _type_checking_nodes(tree), modules
+                tree, _type_checking_nodes(tree), modules, path.parent.relative_to(package_dir).parts
             )
     report["import_cycles"] = check_import_cycles(graph)
     report["modules_seen"] = sorted(graph)

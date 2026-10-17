@@ -112,13 +112,30 @@ test("a subpackage's modules are checked and join the import graph", async () =>
       "from webchirp_bridge.sub import gamma",
       "",
     ].join("\n"));
+    // Relative imports count from the importing module's package: ".." is
+    // the bridge package here, and "." is sub.
     writeFileSync(path.join(sub, "gamma.py"), [
-      "from webchirp_bridge import delta",
+      "from .. import delta",
+      "",
+    ].join("\n"));
+    writeFileSync(path.join(sub, "alpha.py"), [
+      "from __future__ import annotations",
+      "",
+      "from . import beta",
+      "",
+    ].join("\n"));
+    writeFileSync(path.join(sub, "beta.py"), [
+      "from __future__ import annotations",
+      "",
+      "from .alpha import helper",
       "",
     ].join("\n"));
     const found = report(dir);
     assert.deepEqual(found.future_annotations, ["webchirp_bridge/sub/gamma.py:1 lacks 'from __future__ import annotations'"]);
-    assert.deepEqual(found.modules_seen, ["__init__", "delta", "sub", "sub.gamma"]);
-    assert.deepEqual(found.import_cycles, ["delta -> sub.gamma -> delta"]);
+    assert.deepEqual(found.modules_seen, ["__init__", "delta", "sub", "sub.alpha", "sub.beta", "sub.gamma"]);
+    assert.deepEqual(found.import_cycles, [
+      "delta -> sub.gamma -> delta",
+      "sub.alpha -> sub.beta -> sub.alpha",
+    ]);
   });
 });
