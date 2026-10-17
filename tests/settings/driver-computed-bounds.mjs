@@ -57,6 +57,9 @@ function findSetting(nodes, id) {
   return null;
 }
 
+// The id the FT1D-family driver gives a SmartBeacon profile's low speed
+// (ft1d.py builds it from "aprs.smartbeaconing_profile[%d]"), spelled once so
+// every assertion looks up the same setting the driver's lambda is attached to.
 function lowSpeedId(profile) {
   return `aprs.smartbeaconing_profile[${profile}].low_speed_mph`;
 }

@@ -168,6 +168,13 @@ def _serialize_setting_value(
     def _put_bound(
         key: str, getter_name: str, attr_name: str, convert: Callable[[Any], float | int]
     ) -> None:
+        """Store one bound under key in the JSON shape, or leave key out.
+
+        A bound neither the getter nor the attribute supplies is omitted rather
+        than sent as null: the panel reads a missing min/max/step as no limit
+        (`setting-values.ts` checks Number.isFinite), and convert(None) would
+        raise.
+        """
         bound = _setting_value_bound(value, getter_name, attr_name, setting_name)
         if bound is not None:
             data[key] = convert(bound)
