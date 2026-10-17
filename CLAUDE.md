@@ -88,16 +88,13 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `radio_memories`, `radio_settings`, `column_metadata`,
   `images`, plus `jsbridge` (JS-boundary helpers), `runtime_errors` and `rpc`
   (the `RPC_METHODS` table and `rpc_dispatch`). `__init__.py` only installs
-  the shims CHIRP needs before import. No embedded Python in JS files.
+  the shims CHIRP needs before import.
 - Offline use: the service worker (`web/sw.ts`, logic in
   `web/js/offline-cache.ts`, registered by `web/js/offline.ts` on the built
   site only) caches each deploy whole from `asset-manifest.json`'s `offline`
   section. A file the app fetches at runtime under a fixed name must be added
-  to `OFFLINE_DATA_FILES` (`scripts/build-dist.ts`), and a new CDN dependency
-  to `web/js/cdn-urls.ts`: anything missing from that section breaks only
-  offline, which no online page load reveals. Bumping the Sentry SDK means
-  updating `SENTRY_SDK_MODULES` there too; `tests/e2e/sentry-sdk-modules.mjs`
-  checks it against what jsDelivr's build actually imports.
+  to `OFFLINE_DATA_FILES` (`scripts/build-dist.ts`): anything missing from
+  that section breaks only offline, which no online page load reveals.
 - `chirp/`: Upstream CHIRP source as a git submodule. The runtime never reads it
   file by file: `scripts/build-chirp-bundle.ts` (`npm run build:chirp`, run by `dev`
   and `build:dist`) zips the pinned `chirp/chirp` package -- minus `wxui`, `cli`,
@@ -155,13 +152,6 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   workflow (`.github/workflows/e2e.yml`). Drive the app with the page-side
   steps in `scripts/app-driver.ts`, which `scripts/update-screenshots.ts` uses
   too, and route any third-party API to a fixture with `page.route()`.
-- Each suite is globbed, not listed: `npm run test:channels` runs
-  `tests/channels/*.mjs`. **Adding a test is dropping a file into a suite
-  directory — never edit `package.json` for it.** `scripts/coverage.ts`
-  discovers the same directories, and fails if a suite exists that no npm
-  script runs.
-- Name a test for what it covers, without a `test-` prefix; the directory
-  already says it is a test (`tests/channels/channel-list.mjs`).
 - Shared fakes belong in `tests/support/`; import from there before writing
   a new one.
 - A file in a suite directory is executed by the runner, so a helper with no
@@ -174,9 +164,9 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `web/`. Drive it like a user with `tests/support/ui-interactions.mjs`
   (`dispatch`/`emit`, which also await async listeners, `selectRadioBySearch`,
   `importSampleCsv`, `clickLocationButton`, `setLayout`, `setInputFiles`...).
-  Dispatch at the element a user would touch and let it bubble; never set an
-  event's `target`. A module handed a partial `ctx.dom` gets index.html's
-  elements through `pageElement(name)`; an element the page lacks is created
+  Dispatch at the element a user would touch and let it bubble. A module
+  handed a partial `ctx.dom` gets index.html's elements through
+  `pageElement(name)`; an element the page lacks is created
   explicitly by the test, with a comment saying why. jsdom does no layout, so
   the channel grid renders every row under test; windowing is covered by the
   browser tests.
@@ -186,49 +176,22 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   `log`, `actions` and every constructed sibling module.
 - Keep state private to the module that owns it; expose accessors instead.
   `web/js/ui/state.ts` is only for state that genuinely spans modules.
-- Call siblings through `ctx` (`ctx.table.render()`) or `ctx.actions`, never by
-  importing them — that keeps the module graph free of cycles. Such calls must
-  happen after construction, never in a factory body.
+- Calls to siblings through `ctx` happen after construction, never in a
+  factory body.
 - Modules bind their own DOM listeners in a `bindEvents()`; `ui.ts` only binds
   what no single module owns.
-- Query document elements in `web/js/ui/dom.ts`, not in feature modules.
 
 ## Rules for Agents
-- Keep Python and JavaScript separated. Put runtime Python code in
-  `web/python/webchirp_bridge/*.py`; a new module must be listed in `RUNTIME_PYTHON_FILES`
-  (`web/js/python-sources.ts`) so it is seeded into Pyodide; its URL follows from that
-  list (`web/js/runtime-python-urls.ts`, which the dist build replaces with the hashed
-  URLs). The module graph must stay acyclic; call across modules by importing, never
-  through the globals.
-- A new RPC method is a function registered in `RPC_METHODS`
-  (`web/python/webchirp_bridge/rpc.py`) and listed with its parameter names in
-  `RPC_METHODS` (`web/js/rpc-dispatch.ts`); `tests/channels/rpc-contract.mjs` fails when
-  the two disagree. JS calls it by name with named parameters -- never by evaluating a
-  Python expression string or writing an interpreter global. Nothing else in the package
-  is callable from JS. Test snippets (`harness.runPython`) see the package flattened into
-  the globals by `tests/support/bridge_namespace.py`; production code never does.
+- Python modules call each other by importing, never through the globals. Test
+  snippets (`harness.runPython`) see the package flattened into the globals by
+  `tests/support/bridge_namespace.py`; production code never does.
 - Prefer generic, parameterized flows based on selected CHIRP driver/module/class.
 - Do not reintroduce radio-specific RPC methods when generic selected-radio methods can be used.
 - Preserve debug visibility: full errors/tracebacks should be logged to the bottom debug panel.
-- Newly added functions need a comment as to what they do and why.
-- Sources are TypeScript with erasable syntax only (`erasableSyntaxOnly`), so
-  Node and the dev server run them by stripping types: no `enum` (use an
-  `as const` object), no `namespace`, no constructor parameter properties, and
-  an import used only as a type is `import type` (`verbatimModuleSyntax`).
-  Relative imports name the `.ts` file (`import { x } from "./y.ts"`), because
-  Node resolves the specifier as written; `allowImportingTsExtensions` lets tsc
-  accept it. New exported functions have typed signatures (parameters and
-  return type). An explicit `any` belongs only where data arrives untyped --
-  JSON from Python, the network or a file, a Pyodide proxy -- with a comment
-  saying so; prefer a real type, then `unknown`.
 - Nothing in the dist build reads comments: esbuild resolves the imports and
   the page rewrite touches only the `src`/`href` of the tags that load a module
   or stylesheet. So the old rule about spelling module paths in comments (and
   its test) is retired.
-- Python functions must have type signatures.
-- An import used only in annotations goes under `if TYPE_CHECKING:` so it adds no
-  runtime dependency; every module has `from __future__ import annotations`, which is
-  what makes that safe. Type radio-shaped parameters with the CHIRP class, not `Any`.
 - Avoid context pollution by spawning sub-agents when appropriate.
   - Use sub-agent sandboxing when a read-only task is to be executed.
   - Use sub-agents to produce a summary for a commit message.
@@ -243,12 +206,8 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - When you discover something new, or unexpected, put it in FINDINGS.md and
   nowhere else. CLAUDE.md holds instructions only: no findings, triage notes
   or explanations of why something happened.
-- Analytics goes through `trackEvent` in `web/js/ui/analytics.ts`; never reach
-  `gtag` directly. Every parameter an event sends must be declared in
-  `CUSTOM_DIMENSIONS` (`web/js/analytics.ts`) or GA collects it and shows it
-  nowhere, and never send user data — no file names, channel names, frequencies,
+- Analytics never sends user data — no file names, channel names, frequencies,
   search terms or coordinates.
-- When on a worktree other than the master branch run a dev server on a port other than 8000.
 - Avoid regressions in clone workflow:
   - Download should record the image on the selected radio's session.
   - Upload should use the session's image and fail clearly if the session holds
@@ -300,9 +259,7 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
   and running `bubblewrap update --skipVersionUpgrade` in `android/` (plain
   `bubblewrap update` for a release, which bumps the version), then commit the
   manifest, `manifest-checksum.txt` and the regenerated files together. Never
-  edit generated files by hand: the next update overwrites them. The one
-  exception is re-applied after every update: replace the template's
-  `jcenter()` with `mavenCentral()` in `android/build.gradle`. A changed web
+  edit generated files by hand: the next update overwrites them. A changed web
   icon means regenerating too, then recording its SHA-256 in
   `android/icon-sources.json`. `tests/build/android-app.mjs` holds the project
   to the site (host, package, launch query and flag, name, colours, icons and
@@ -319,18 +276,14 @@ This repository hosts a browser-based CHIRP interface (`web/`) that executes CHI
 - Commit after every change.
 - Keep commits small and scoped to one functional fix/refactor when practical.
 - Include clear commit messages that describe user-visible behavior or architectural impact.
-- Never include agent session ID links in any commit message.
 - If model is other than Anthropic/OpenAI, add a Co-Authored-By: <model name and parameters> at the end of the commit message
 - Never use backticks (`) anywhere in any generated command to execute.
-- Never modify RELEASE_NOTES.md when on a branch. When on master, update RELEASE_NOTES.md based on PRs which were merged in with current date. Each entry is a single line: the user-visible change plus the PR number, no multi-sentence detail. At the same time run `npm run screenshots` to regenerate images/screenshot.png, images/screenshot-for-opengraph.png, and web/images/social-preview.png from the current version of the app. When generating a screenshot, query the RSGB API channels for locator IO82MM. When you do this, also consolidate/update FINDINGS.md so that it is always up to date.
+- When on master, update RELEASE_NOTES.md based on PRs which were merged in with current date. Each entry is a single line: the user-visible change plus the PR number, no multi-sentence detail. At the same time run `npm run screenshots` to regenerate images/screenshot.png, images/screenshot-for-opengraph.png, and web/images/social-preview.png from the current version of the app. When generating a screenshot, query the RSGB API channels for locator IO82MM. When you do this, also consolidate/update FINDINGS.md so that it is always up to date.
 
 ## Code Review
 - If you are an OpenAI agent, use Astra Medium when performing code review.
 - If you're an Anthropic model, use Fable Medium.
 - Always post a response to each comment when you receive feedback.
-
-# PR Behaviour
-- When submitting a PR, in the PR description include any new dependencies which were added.
 
 ## Validation
 Before committing, run syntax checks, typechecking and all tests.
@@ -338,5 +291,9 @@ Before committing, run syntax checks, typechecking and all tests.
 tests; tsc parses the `.ts` sources), Python types (`check:types`, pyright),
 TypeScript types (`check:js`, tsc with `strict` over both projects) and the four
 automatic suites.
+Code conventions are enforced by tests rather than listed here:
+`tests/build/source-conventions.mjs` (TypeScript), `tests/build/python-conventions.mjs`
+(runtime Python) and, on a pull request, `scripts/check-pull-request.ts`. Each
+failure names the file and line and says what to do.
 
 
