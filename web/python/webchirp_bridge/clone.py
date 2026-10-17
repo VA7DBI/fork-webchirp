@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 
-from chirp import chirp_common
+from chirp import chirp_common, errors
 from js import serial_prepare_clone
 
 from webchirp_bridge.channel_rows import _csv_text_for_rows
@@ -157,6 +157,34 @@ def _prepare_clone_session(radio_cls: type[chirp_common.Radio]) -> str:
     return str(transport or "")
 
 
+def _sync_out(radio: chirp_common.CloneModeRadio) -> None:
+    """Run the driver's sync_out, taking uv5r's finished-upload report as success.
+
+    With its Range Override Parameter set, uv5r's ``_do_upload``
+    (chirp/chirp/drivers/uv5r.py) writes every range and then reports the
+    finished upload by raising a RadioError that says it is not an error and
+    asks for CHIRP to be restarted. Passed on, it showed the user a failed
+    upload after a complete write, and they wrote the radio again (Sentry
+    WEBCHIRP-FRONTEND-22). The driver's own state tells that report from a
+    real failure, so no message is matched: it clears ``_all_range_flag`` on
+    the line before that raise and nowhere else on the upload path, so every
+    other RadioError -- sync_out's wrapping of an unexpected exception
+    included -- leaves the flag set. Nothing here needs the restart: the next
+    upload parses the session's image afresh, which clears the flag again.
+    """
+    all_range = getattr(radio, "_all_range_flag", None) is True
+    try:
+        radio.sync_out()
+    except errors.RadioError:
+        if all_range and getattr(radio, "_all_range_flag", None) is False:
+            _log_debug(
+                "The driver reported its finished range-override upload as a "
+                "RadioError; the upload completed."
+            )
+            return
+        raise
+
+
 def _download_selected_radio_sync(session: RadioSession) -> dict[str, Any]:
     """Run the session driver's sync_in and return rows plus the state it recorded."""
     radio_cls = session.radio_cls
@@ -203,7 +231,7 @@ def _upload_selected_radio_sync(
     # reports the transport the pipe has to name; nothing above touches it.
     transport = _prepare_clone_session(image_cls)
     radio.set_pipe(_new_serial_pipe(image_cls, transport))
-    radio.sync_out()
+    _sync_out(radio)
     session.record_radio(radio, session.image_origin)
     return {"uploaded": True, "settings": settings_result["settings"]}
 
