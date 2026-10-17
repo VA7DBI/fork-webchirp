@@ -164,8 +164,8 @@ def _sync_out(radio: chirp_common.CloneModeRadio) -> None:
     (chirp/chirp/drivers/uv5r.py) writes every range and then reports the
     finished upload by raising a RadioError that says it is not an error and
     asks for CHIRP to be restarted. Passed on, it showed the user a failed
-    upload after a complete write, and they wrote the radio again (Sentry
-    WEBCHIRP-FRONTEND-22). The driver's own state tells that report from a
+    upload after a complete write (Sentry WEBCHIRP-FRONTEND-22). The
+    driver's own state tells that report from a
     real failure, so no message is matched: it clears ``_all_range_flag`` on
     the line before that raise and nowhere else on the upload path, so every
     other RadioError -- sync_out's wrapping of an unexpected exception

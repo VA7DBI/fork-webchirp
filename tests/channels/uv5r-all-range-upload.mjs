@@ -8,8 +8,8 @@ import { SimulatedUv5rBridge } from "../support/simulated-uv5r.mjs";
 // CHIRP's uv5r driver reports a finished upload with the Range Override
 // Parameter set ("UseAtOwnRisk") by raising a RadioError that says it is not
 // an error (_do_upload in chirp/chirp/drivers/uv5r.py). Treated as a failure,
-// the user saw an upload error after a write that had reached the radio, and
-// uploaded again (Sentry WEBCHIRP-FRONTEND-22). These tests run the real
+// the user saw an upload error after a write that had reached the radio
+// (Sentry WEBCHIRP-FRONTEND-22). These tests run the real
 // driver against a simulated radio, through the same RPC the browser calls:
 // the finished upload succeeds and is recorded on the session, and a real
 // failure on the same path still fails.
