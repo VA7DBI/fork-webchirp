@@ -214,6 +214,25 @@ def _immutable_policy_errors(
     return validation_errors
 
 
+def _erased_copy(existing: chirp_common.Memory) -> chirp_common.Memory:
+    """``existing`` as it would be once erased, for the immutable policy to judge.
+
+    ``Memory.__setattr__`` refuses any field listed in ``immutable``, and
+    drivers list ``empty`` there for slots that always exist, such as the
+    fixed GMRS channels of ``radioddity_gm30``. Setting it directly would
+    raise before the policy could refuse the erase in its own words, so the
+    guard is lifted for that one assignment, the way desktop CHIRP's paste
+    lifts it to renumber a memory. ``dupe`` shares the list with
+    ``existing``, which is why it is replaced rather than emptied.
+    """
+    erased = existing.dupe()
+    immutable = list(erased.immutable)
+    erased.immutable = []
+    erased.empty = True
+    erased.immutable = immutable
+    return erased
+
+
 def _memory_row_changed(
     existing: chirp_common.Memory, new: chirp_common.Memory
 ) -> bool:
@@ -265,8 +284,7 @@ def _prepare_row_change(
     if not str(row.get("Frequency", "") or "").strip():
         if existing.empty:
             return "skip", existing, [], []
-        erased = existing.dupe()
-        erased.empty = True
+        erased = _erased_copy(existing)
         return "erase", erased, [], _immutable_policy_errors(
             radio, existing, erased
         )

@@ -34,6 +34,7 @@ from webchirp_bridge.jsbridge import _log_debug
 from webchirp_bridge.power_levels import _level_map_for_radio
 from webchirp_bridge.radio_settings import _validate_and_apply_radio_settings
 from webchirp_bridge.row_validation import (
+    _erased_copy,
     _immutable_policy_errors,
     _memory_slot_key,
     _prepare_row_change,
@@ -278,6 +279,7 @@ def _apply_rows_to_radio_instance(
     # A row the user did supply for that number still writes normally: explicit
     # intent is in seen_numbers and never reaches this loop.
     protected = (session.unreadable_channels if session else set()) - seen_numbers
+    undeletable_slots: dict[str, list[int]] = {}
     for number in sorted(valid_numbers - seen_numbers - protected):
         # Omitted rows mean erase. Read first so immutable special channels are
         # protected and already-empty slots do not trigger needless writes.
@@ -289,13 +291,20 @@ def _apply_rows_to_radio_instance(
             continue
         if existing.empty:
             continue
-        erased = existing.dupe()
-        erased.empty = True
-        validation_errors = _immutable_policy_errors(radio, existing, erased)
+        # A slot the driver will not let go of (empty is immutable on fixed
+        # GMRS channels, for one) stays as it is, as it would in desktop
+        # CHIRP, which refuses to delete it. Refusing the upload instead would
+        # be an error no preflight can foresee, since an omitted channel has
+        # no row to highlight, and would leave the user re-adding every fixed
+        # channel by hand. A row that clears its Frequency is explicit, so
+        # _prepare_row_change still refuses that one.
+        validation_errors = _immutable_policy_errors(
+            radio, existing, _erased_copy(existing)
+        )
         if validation_errors:
-            raise RuntimeUnsupportedError(
-                f"Channel {number}: {'; '.join(str(error) for error in validation_errors)}"
-            )
+            reason = "; ".join(str(error) for error in validation_errors)
+            undeletable_slots.setdefault(reason, []).append(number)
+            continue
         _erase_memory(radio, number)
 
     if protected:
@@ -307,4 +316,9 @@ def _apply_rows_to_radio_instance(
     _log_grouped_channel_failures(
         unreadable_erase_slots,
         "were not erased because their current values could not be checked",
+    )
+    _log_grouped_channel_failures(
+        undeletable_slots,
+        "are missing from the channel list but were kept, because the driver "
+        "does not allow erasing them",
     )
