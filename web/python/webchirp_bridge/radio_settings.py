@@ -20,6 +20,7 @@ from chirp import (
     settings as chirp_settings,
 )
 
+from webchirp_bridge import workarounds
 from webchirp_bridge.jsbridge import _log_debug
 from webchirp_bridge.session import resolve_session
 
@@ -107,16 +108,16 @@ def _setting_value_bound(
 ) -> Any:
     """Read one numeric bound of a setting value, never letting the driver raise.
 
-    The getter is what CHIRP's own editor reads, and drivers may replace it on
-    the instance with a bound computed from a sibling: `ft1d.py:1778` sets a
-    SmartBeacon low speed's get_max to ``int(high_val.get_value()) - 1``. When
-    that sibling never initialized -- a high speed byte outside its own range,
-    which every zeroed image has -- the getter reaches ``int(None)``, and one bad
-    bound used to fail the whole settings tree, and with it every load,
-    download and export of the radio (WEBCHIRP-FRONTEND-2G). The bound the
-    value was constructed with is still on it, so that is reported instead and
-    the failure goes to the debug panel. A getter that answers None falls back
-    the same way.
+    The getter is what CHIRP's own editor reads, and a driver may replace it on
+    the instance with a bound computed from a sibling value. Such a getter can
+    raise -- reading a sibling that never initialized, say -- and one bad bound
+    would fail the whole settings tree, and with it every load, download and
+    export of the radio. The bound the value was constructed with is still on
+    it, so that is reported instead and the failure goes to the debug panel,
+    the same way a driver whose whole get_settings() raises is handled in
+    _validate_and_apply_radio_settings. A known defect of this kind is
+    repaired by its workaround before the tree gets here; this is for the next
+    one. A getter that answers None falls back the same way.
 
     CHIRP's settings objects are untyped and expose these bounds either as a
     getter or as a bare attribute depending on the value class, so what comes
@@ -505,7 +506,7 @@ def _validate_and_apply_radio_settings(
         return {"valid": True, "issues": [], "settings": []}
 
     try:
-        settings_tree = radio.get_settings()
+        settings_tree = workarounds.get_settings(radio)
     except Exception:
         if serialized_groups:
             raise
@@ -559,7 +560,7 @@ def get_radio_settings(session_id: str) -> dict[str, Any]:
             "This radio does not expose radio-wide settings."
         )
     try:
-        settings_tree = radio.get_settings()
+        settings_tree = workarounds.get_settings(radio)
     except Exception as exc:
         return _settings_unavailable_payload(SETTINGS_NEED_STATE_MESSAGE, error_text=str(exc))
     return {

@@ -14,13 +14,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from webchirp_bridge.workarounds import uv5r
+from webchirp_bridge.workarounds import ft1d, uv5r, vx8
 
 if TYPE_CHECKING:
     import types
     from typing import Callable, Optional, TypeVar
 
-    from chirp import chirp_common
+    from chirp import chirp_common, settings as chirp_settings
 
     _Workaround = TypeVar("_Workaround")
 
@@ -59,3 +59,21 @@ def sync_out(radio: chirp_common.CloneModeRadio) -> None:
         radio.sync_out()
     else:
         workaround(radio)
+
+
+# The get_settings hook's workarounds: each one reads the driver's settings
+# tree itself and repairs it before anything serializes or applies it.
+_GET_SETTINGS: dict[
+    tuple[str, str], Callable[[chirp_common.Radio], chirp_settings.RadioSettings]
+] = {
+    **{key: ft1d.get_settings for key in _class_keys(ft1d)},
+    **{key: vx8.get_settings for key in _class_keys(vx8)},
+}
+
+
+def get_settings(radio: chirp_common.Radio) -> chirp_settings.RadioSettings:
+    """Read the driver's settings tree, through its class's workaround if it has one."""
+    workaround = _for_class(_GET_SETTINGS, type(radio))
+    if workaround is None:
+        return radio.get_settings()
+    return workaround(radio)
