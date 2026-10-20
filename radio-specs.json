@@ -32104,28 +32104,54 @@
     },
     "Zartek|ZA-758": {
       "formFactor": "handheld",
-      "batteryMah": null,
-      "charging": null,
+      "batteryMah": 1600,
+      "charging": [
+        "external"
+      ],
       "powerW": {
         "min": null,
         "max": 0.5
       },
-      "bands": null,
+      "bands": [
+        {
+          "band": "PMR446",
+          "rxMHz": [
+            446.00625,
+            446.09375
+          ],
+          "txMHz": [
+            446.00625,
+            446.09375
+          ]
+        },
+        {
+          "band": "Other",
+          "rxMHz": [
+            463.975,
+            464.375
+          ],
+          "txMHz": [
+            463.975,
+            464.375
+          ]
+        }
+      ],
       "modulations": [
         "FM"
       ],
-      "display": null,
+      "display": false,
       "inProduction": null,
-      "dualReceive": null,
-      "crossBandRepeater": null,
-      "aprs": null,
-      "gps": null,
-      "bluetoothProgramming": null,
+      "dualReceive": false,
+      "crossBandRepeater": false,
+      "aprs": false,
+      "gps": false,
+      "bluetoothProgramming": false,
       "sources": [
-        "https://www.trappers.co.za/products/zartek-2-way-radio-za-758"
+        "https://zartek.co.za/images/zartek/products/two_way_radios/za758/ZA-758_user_manual.pdf",
+        "https://zartek.co.za/images/zartek/products/two_way_radios/za758/ZA758-info.jpg"
       ],
-      "caveat": "South African licence-free radio with 16 preset channels.",
-      "note": "Trappers: 500 mW licence-free, 16 channels, 50 CTCSS/105 DCS (so analog FM), 5 and 8 frequency licence-free bands, external mic jack; backordered 2026-10, which does not establish discontinuation. No battery, charging, frequency range or display stated; the driver accepts 400-470 MHz, which is not the radio band. The driver notes High is unmeasured (2 W is the ZA-748 rating)."
+      "caveat": "South African licence-free version: 16 channels locked to eight PMR446 frequencies and five in South Africa's 464 MHz licence-free band, at 500 mW.",
+      "note": "Zartek manual (2014-01-09) spec page: 400-470 MHz hardware locked to the 446 and 464 MHz bands, 1600 mAh 3.8 V Li-ion, 500 mW, 16K0F3E/8K0F3E, PC programming by cable (GE-254). Channel table: 1-8 are 446.00625-446.09375, 1a-5a are 463.975, 464.125, 464.175, 464.325, 464.375. Charging: mains adaptor into the battery side DC jack, about 6 h. Info sheet: no display in the product photo, plug-in charger. Trappers listed it backordered in 2026-10, which does not establish discontinuation. The driver notes High is unmeasured (2 W is the ZA-748 rating)."
     },
     "Zastone|ZT-X6": {
       "formFactor": "handheld",
