@@ -3802,6 +3802,24 @@
       "caveat": "16-channel UHF radio; figures come from reseller listings only.",
       "note": "16-channel UHF radio; reseller specs only."
     },
+    "Baofeng|DM-32UV": {
+      "formFactor": null,
+      "batteryMah": null,
+      "charging": null,
+      "powerW": null,
+      "bands": null,
+      "modulations": null,
+      "display": null,
+      "inProduction": null,
+      "dualReceive": null,
+      "crossBandRepeater": null,
+      "aprs": null,
+      "gps": null,
+      "bluetoothProgramming": null,
+      "sources": [],
+      "caveat": "",
+      "note": "Added by CHIRP ec452b25; not yet researched."
+    },
     "Baofeng|F-11": {
       "formFactor": "handheld",
       "batteryMah": null,
@@ -32030,6 +32048,24 @@
       ],
       "caveat": "Argentine rebadge of the AnyTone AT-778UV. 25/15/5 W, 200 channels, dual watch.",
       "note": "Argentine rebadge of AnyTone AT-778UV (shared CHIRP driver). 25/15/5W, 200ch, dual watch."
+    },
+    "Zartek|ZA-758": {
+      "formFactor": null,
+      "batteryMah": null,
+      "charging": null,
+      "powerW": null,
+      "bands": null,
+      "modulations": null,
+      "display": null,
+      "inProduction": null,
+      "dualReceive": null,
+      "crossBandRepeater": null,
+      "aprs": null,
+      "gps": null,
+      "bluetoothProgramming": null,
+      "sources": [],
+      "caveat": "",
+      "note": "Added by CHIRP ec452b25; not yet researched."
     },
     "Zastone|ZT-X6": {
       "formFactor": "handheld",
